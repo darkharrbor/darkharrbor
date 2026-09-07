@@ -2,7 +2,7 @@
 set -eu
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-output=${1:-darkharrbor-evidence-v1.1.0}
+output=${1:-darkharrbor-evidence-v1.0.0}
 case "$output" in
 	/*) ;;
 	*) output=$PWD/$output ;;
@@ -63,7 +63,7 @@ generated=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 cat >"$bundle/evidence.json" <<EOF
 {
   "schema": 1,
-  "release": "v1.1.0",
+  "release": "v1.0.0",
   "generated_at": "$generated",
   "source_commit": "$source_commit",
   "image": "$image",

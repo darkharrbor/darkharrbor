@@ -1469,9 +1469,9 @@ the separate unlock key; protect those independently.
 
 ## Release Upgrades and Rollback
 
-The previous supported release boundary is `v1.0.0-rc.1` at database schema
-14. Current startup applies the embedded forward migrations through schema 45;
-restarting the same release is idempotent. A supported prior
+Database schema 14 is the oldest state this release can upgrade from. Startup
+applies the embedded forward migrations through schema 45; restarting the same
+release is idempotent. A supported prior
 `darkharrbor.conf` remains valid, and unknown or retired tuning keys are
 ignored with key-only warnings instead of preventing startup.
 
