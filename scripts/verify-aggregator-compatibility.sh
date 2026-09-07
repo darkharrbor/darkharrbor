@@ -75,6 +75,28 @@ start_aio() {
 	wait_http "http://127.0.0.1:$aio_port/"
 }
 
+wait_seadex_idle() {
+	# AIOStreams holds seadex/trs.lock for the duration of its dataset sync and
+	# does not release it on SIGTERM. Replacing the container while that lock is
+	# held strands it, along with a partial trs.json.tmp, on the shared volume,
+	# and the next container blocks on the stale lock instead of ever serving
+	# HTTP -- which reads as an upgrade incompatibility that is not real.
+	for _attempt in $(seq 1 180); do
+		state=$(docker exec "$aio" sh -c '[ -e /app/data/seadex/trs.lock ] && echo held || echo free' 2>/dev/null || echo unknown)
+		case $state in
+		free) return 0 ;;
+		held) ;;
+		*)
+			echo "compatibility gate: cannot read seadex lock state" >&2
+			return 1
+			;;
+		esac
+		sleep 1
+	done
+	echo "compatibility gate: seadex dataset sync did not settle" >&2
+	return 1
+}
+
 probe_ui() {
 	docker run -d --name "$browser" --network "$network" --shm-size 2g 		-p 127.0.0.1::4444 "$SELENIUM_CHROMIUM_IMAGE" >/dev/null
 	browser_port=$(container_port "$browser" 4444)
@@ -132,6 +154,7 @@ EOF
 	if test "$upgrade" = true; then
 		start_aio "$AIOSTREAMS_IMAGE"
 		probe_ui
+		wait_seadex_idle
 		docker rm -f "$aio" >/dev/null
 	fi
 	start_aio "$candidate"
