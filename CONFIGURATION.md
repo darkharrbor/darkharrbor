@@ -14,7 +14,8 @@ as the download client and indexer. No aggregator, no reactive commit. This is
 > Upgrades · Installer Uninstall and Data Retention · Reverse Proxy and Bind
 > Safety · TorBox Provider · NNTP Providers · Cache Configuration · CDN /
 > Stream Tuning · Selection Mode · Arr Notification · Strm Mode / Docker
-> Proxy · Wizard Stages · Tuning Reference · Subcommands
+> Proxy · Wizard Stages · Tuning Reference · Environment-Only Settings ·
+> Subcommands
 
 **OPTIONAL — aggregated playback and play-to-commit.** This is independent of
 base Arr search/grab wiring: `t2` provides aggregated playback without commit,
@@ -2102,6 +2103,366 @@ so a value set in Compose is overridden by the same key here.
 | `HARRBOR_NNTP_STRIPE` | `false` | Round-robin healthy NNTP providers per segment (NS-8.4) |
 | `HARRBOR_NNTP_PREWARM_BYTES` | `16777216` | Leading-byte prewarm budget after manifest resolution (16 MiB) |
 | `HARRBOR_READAHEAD_SEEK_WIDEN_MS` | `0` | Milliseconds NNTP readahead stays widened to the pool ceiling after a seek. `0` keeps width pinned at the ceiling always, identical to pre-NS-5.5 behaviour |
+
+## Environment-Only Settings
+
+The keys below are read **only from the environment**. They are not on the
+`darkharrbor.conf` allowlist documented above, so putting them in that file
+does nothing at all — they are ignored on read with a key-only warning, and the
+default silently stays in force. That failure is quiet, which is exactly why
+they are listed here.
+
+Set them in the `environment:` block of your deployment's Compose file
+(`.darkharrbor/compose.yml` for an installer deployment). `install.sh
+--upgrade` rewrites only the two `image:` lines and passes every other line
+through unchanged, so anything you add here survives upgrades.
+
+Defaults are correct for almost every deployment, and the three performance
+profiles already pick sensible values for the pool sizes. Reach for these when
+you have a specific symptom, not as routine tuning — several of them trade
+playback latency against background work, and the wrong value is worse than the
+default.
+
+### NNTP connection pool
+
+The pool is split: `TOTAL` is the whole budget, and `DEMAND` and `READAHEAD`
+divide it between playback and prefetch. Your provider's own concurrent
+connection limit is the real ceiling — exceeding it gets connections refused,
+not queued.
+
+- **`HARRBOR_NNTP_TOTAL_CONNECTIONS`** — default `16`
+  Total NNTP connection pool size, demand plus readahead. Raise it only as far
+  as your provider actually allows; a plan permitting 50 connections is the
+  argument for raising it, a slow stream is not.
+- **`HARRBOR_NNTP_DEMAND_CONNECTIONS`** — default `8`
+  Reserved for on-demand playback fetches. This is the one that governs how
+  fast a seek recovers, since a seek cannot be served by prefetch.
+- **`HARRBOR_NNTP_READAHEAD_CONNECTIONS`** — default `8`
+  Used by the prefetch goroutine. Raising it makes sequential playback smoother
+  on high-latency providers; raising it at the expense of `DEMAND` makes seeks
+  worse. Tune the pair together, not individually.
+- **`HARRBOR_NNTP_WARM_CONNS`** — default `1`, `0` disables
+  Connections kept authenticated and idle per configured provider, so the first
+  segment of a play skips a fresh dial, TLS handshake and `AUTHINFO`. The cost
+  is one held connection per provider even while idle; set `0` if you are at
+  your provider's connection limit and would rather spend that slot on a fetch.
+
+### NNTP transport
+
+- **`HARRBOR_NNTP_PIPELINE_DEPTH`** — default `4`, `1` disables pipelining
+  Maximum `BODY` commands in flight on a single authenticated connection.
+  Values above `32` are clamped with a startup warning. Pipelining is the
+  cheapest latency win against a distant provider; set `1` if a provider
+  mishandles pipelined requests, which usually presents as corrupt or
+  interleaved segment data rather than an error.
+- **`HARRBOR_NNTP_NEGCACHE_TTL_MIN`** — default `60`, `0` disables
+  How long a segment known to be missing is remembered, so repeat demand for a
+  dead segment short-circuits instead of spending another `BODY` on a certain
+  failure. In-memory and per-process: a restart forgets, costing one re-fetch
+  per segment. Lower it only if you expect a provider to backfill articles it
+  previously reported missing.
+- **`HARRBOR_NNTP_HOST`**, **`HARRBOR_NNTP_PORT`**, **`HARRBOR_NNTP_TLS`**
+  Connection settings for the primary direct-NNTP provider. The wizard collects
+  these and seals them, so setting them by hand is a deliberate override; see
+  [Configuration Sources](#configuration-sources-precedence-highest-first) for
+  which source wins.
+
+### NNTP provider ordering
+
+- **`HARRBOR_NNTP_LAGMODEL_YOUNG_HOURS`** — default `24`, `0` or negative disables
+  Article age below which the lag model orders providers by observed
+  age-at-first-success rather than static preference. Propagation delay is real
+  and provider-specific, so for very fresh posts the fastest provider is not
+  the one you would have picked. Disabling reverts to static preference order.
+- **`HARRBOR_NNTP_LAGMODEL_MIN_SAMPLES`** — default `3`, values below `1` clamp to `1`
+  Observed samples a provider needs before its average is trusted for that
+  ordering. Raise it if a provider's early samples are unrepresentative and you
+  are seeing it promoted or demoted too eagerly.
+
+### NNTP stream-time repair
+
+Both budgets bound the same operation: rebuilding a damaged region mid-stream
+from recovery data instead of failing the play. They exist because that repair
+is an unbounded read behind a live stream if nothing stops it.
+
+- **`HARRBOR_NNTP_REPAIR_BUDGET_MB`** — default `256`, `0` disables repair
+  Byte ceiling for one stream-time repair. Setting `0` restores the older
+  behaviour where exhausting the recovery ladder simply errors.
+- **`HARRBOR_NNTP_REPAIR_BUDGET_SECONDS`** — default `45`, below `1` disables
+  Wallclock ceiling for one repair. Exceeding it abandons the attempt and
+  returns the original error unchanged. Lower it if you would rather fail fast
+  than have a player stall while a repair runs.
+
+### Background audits
+
+Three separate passes, all sampling rather than fully verifying — a complete
+verification would cost as much as downloading the library. `grab health` runs
+once at grab time on a tight budget, `health audit` sweeps the Ready library
+slowly and forever, and `identity audit` is a cheap database-only pass.
+
+Turning any of them off is a legitimate choice on a constrained connection
+budget; you lose early warning, not correctness.
+
+- **`HARRBOR_HEALTHAUDIT_ENABLED`** — default `true`
+  Gates the whole periodic pass to a no-op.
+- **`HARRBOR_HEALTHAUDIT_INTERVAL_SEC`** — default `60`
+  Cadence between audited items — one per minute. Combined with your Ready NNTP
+  library size this sets the full-sweep period; the design target is 7 days or
+  longer. Raise it if the audit's background `STAT`s compete with playback on a
+  tight connection budget.
+- **`HARRBOR_HEALTHAUDIT_SAMPLE_SIZE`** — default `8`
+  `STAT` samples drawn per audited item. Fewer samples is cheaper but noisier,
+  and noise here has consequences — see `RESEARCH_ENABLED` below.
+- **`HARRBOR_HEALTHAUDIT_COMPLETENESS_THRESHOLD`** — default `0.95`
+  Fraction of conclusively-sampled segments that must confirm present for an
+  item to stay healthy. The default sits below `1.0` deliberately, to leave
+  headroom for PAR2 recovery: an item missing a little is still repairable and
+  should not be called dead.
+- **`HARRBOR_HEALTHAUDIT_MAX_DEAD_REGIONS`** — default `64`
+  Caps how many distinct dead regions are persisted per item, so a pathological
+  all-dead item cannot grow its map without bound across many passes.
+- **`HARRBOR_HEALTHAUDIT_RESEARCH_ENABLED`** — default `true`
+  **This is the consequential one.** When a pass finds an item newly decayed,
+  DarkHarrbor blocklists that NZB's content key, records a suppression
+  fingerprint, and marks the item failed so the owning Arr re-searches it. Set
+  `false` to make decay detection purely measurement — the audit still records
+  what it found, but nothing is blocklisted or re-searched. Worth doing if you
+  suspect sampling noise is condemning healthy items.
+- **`HARRBOR_HEALTHAUDIT_RESEARCH_COOLDOWN_MIN`** — default `60`
+  Minimum minutes before the same item may trigger another re-search. Mostly
+  defence in depth: a failed item leaves the audit rotation on its own, so under
+  normal operation this is never tested.
+
+- **`HARRBOR_GRABHEALTH_ENABLED`** — default `true`
+  Gates the at-grab-time sample. This is what stops an already-dead release
+  being accepted, queued, and left permanently unimported.
+- **`HARRBOR_GRABHEALTH_SAMPLE_SIZE`** — default `4`
+  Deliberately half the periodic pass's `8`, because this one runs inside the
+  grab accept path where the budget is roughly a second, not the periodic
+  pass's looser tolerance.
+- **`HARRBOR_GRABHEALTH_TIMEOUT_MS`** — default `1500`
+  Bounds the whole sample pass, leaving headroom under the accept handler's own
+  2-second ceiling. A timeout mid-sample degrades to whatever conclusive samples
+  were already collected — never a hard failure — so lowering it trades
+  confidence for accept latency rather than risking a rejected grab.
+
+- **`HARRBOR_IDENTITYAUDIT_ENABLED`** — default `true`
+  Gates the periodic identity pass. The on-demand HTTP trigger ignores this
+  flag: asking for a pass explicitly is always honoured.
+- **`HARRBOR_IDENTITYAUDIT_INTERVAL_SEC`** — default `300`
+  Slower than the health audit's 60s on purpose — this pass is in-memory and
+  database-only, so there is no provider cost pressure forcing a faster cadence
+  and no benefit to one.
+
+### Prewarm
+
+Prewarm fetches leading bytes before anyone presses play, so the first seconds
+of a title are already local. It is the single biggest lever on
+time-to-first-frame, and the single easiest way to waste provider quota on
+titles nobody watches.
+
+- **`HARRBOR_PREWARM_ENABLED`** — default `true`
+  Gates the whole service to a no-op across every lane.
+- **`HARRBOR_PREWARM_HOTHEAD_MB`** — default `32`
+  Leading megabytes of a just-resolved item pinned at grab time, ahead of any
+  real play request. Raising it buys a faster start on titles you do watch and
+  costs bandwidth on titles you do not; the honest question is what fraction of
+  your grabs actually get played.
+- **`HARRBOR_PREWARM_TIMEOUT_SEC`** — default `45`
+  Bounds one prewarm or seek-target prefetch call regardless of the caller's own
+  context, so a slow provider cannot leave prewarm running indefinitely behind
+  the scenes.
+- **`HARRBOR_PREWARM_MIN_READAHEAD_WORKERS`** / **`HARRBOR_PREWARM_MAX_READAHEAD_WORKERS`**
+  — defaults `1` and `4`
+  Bound the adaptive readahead recommendation. Paired with the torrent CDN
+  capacity default below; raising the maximum without raising that capacity
+  just produces workers that queue.
+- **`HARRBOR_PREWARM_NEXTEP_THRESHOLD`** — default `0.85`
+  Playback fraction past which next-episode prewarm would fire. **Currently
+  inert**: no lane yet reaches an end-of-playback position signal into this
+  code path, so the value is exercised only by tests. Documented because it is
+  settable and reads as if it works; changing it has no effect today.
+
+### Readahead
+
+- **`HARRBOR_READAHEAD_ENABLED`** — default `true`
+  Toggles prefetching. Ignored in `full` cache mode, which always prefetches.
+- **`HARRBOR_READAHEAD_MIN_BUFFER_SEGMENTS`** — default `4`
+  Segments to prefetch before playback is allowed to start. This is a direct
+  trade: raising it delays the first frame but reduces the chance of an early
+  stall on a slow provider.
+- **`HARRBOR_READAHEAD_TAIL_EVICT`** — default `true`
+  Evicts buffered segments that fall behind the lookback window. Disabling it
+  keeps everything already fetched, which helps repeated short seeks backwards
+  at the cost of unbounded buffer growth on a long title.
+- **`HARRBOR_READAHEAD_TAIL_LOOKBACK`** — default `4`
+  Segments retained behind the current position when tail eviction is on.
+  Raise it if your player makes frequent small backward seeks.
+
+### Governor
+
+The governor paces work against providers so a burst never trips rate limiting
+or account flags. Capacities here are concurrency ceilings, not rate limits.
+
+- **`HARRBOR_GOVERNOR_HTTP_CAPACITY`** — default `0` (unbounded)
+  Bounds concurrent HTTP-lane operations across the three classes that share
+  it: live playback, grab-time preflight, and startup prewarm. Set a positive
+  value if an HTTP source rate-limits you. The catch is that all three then
+  share that one budget, so too low a value throttles playback in order to
+  protect prewarm.
+- **`HARRBOR_GOVERNOR_TORRENT_CDN_CAPACITY`** — default `4`
+  Concurrent debrid-CDN fetch operations. The paired default for the prewarm
+  worker bounds above.
+- **`HARRBOR_GOVERNOR_ALTPROVIDER_FAILOVER`** — default `true`
+  Allows bounded mid-stream failover to an alternate provider holding the same
+  content hash, rather than failing the play. Set `false` if you do not want a
+  second provider account touched by playback recovery at all — even bounded
+  and read-mostly.
+- **`HARRBOR_GOVERNOR_REPAIR_ENABLED`** — default `true`
+  Gates torrent-lane self-repair: same-provider re-add, then alternate-provider
+  re-add, then blocklist and re-search. Set `false` to make a stream-time
+  exhaustion terminal immediately, with no automatic second attempt.
+- **`HARRBOR_GOVERNOR_REPAIR_COOLDOWN_MIN`** — default `30`
+  Minimum minutes before the same torrent identity may be repaired again. This
+  exists to stop a readahead storm — many concurrent chunk failures on one
+  broken item — from re-triggering repair or re-blocklisting over and over.
+
+### HTTP stream lane
+
+- **`HARRBOR_HTTP_IA_FILE_PREFERENCE`** — default `derivative`
+  Which Internet Archive file variant to prefer. `derivative` picks the
+  transcoded copy, which is smaller and far more likely to play directly;
+  choose the original only if you specifically want the source encode and can
+  live with formats a player may refuse. An unrecognised value falls back to
+  `derivative`.
+- **`HARRBOR_HTTP_PREDICTIVE_RESOLVE_ENABLED`** — default `true`
+  Resolves the next upstream URL slightly before it is needed, so a redirect or
+  token refresh does not stall playback at the moment of use.
+- **`HARRBOR_HTTP_PREDICTIVE_RESOLVE_MIN_LEAD_MS`** /
+  **`HARRBOR_HTTP_PREDICTIVE_RESOLVE_MAX_LEAD_MS`** — defaults `5000` and `60000`
+  How far ahead that resolve may run. Too small and the resolve lands too late
+  to help; too large and you burn resolves on positions the viewer never
+  reaches, which matters when the upstream rate-limits resolution.
+- **`HARRBOR_HTTP_SELFHEAL_ENABLED`** — default `true`
+  Lets the HTTP lane re-resolve a source that has gone bad mid-stream instead of
+  failing the play outright.
+- **`HARRBOR_HTTP_SELFHEAL_COOLDOWN_MIN`** — default `60`
+  Minimum minutes before the same source is self-healed again, so a permanently
+  broken source cannot drive a re-resolve loop.
+
+### ffprobe relay
+
+The relay runs a network-capable `ffprobe` on behalf of media servers that need
+to inspect a `.strm` target. It is a real fan-out risk — an Arr retrying an
+import can hammer it — so every bound here exists to contain that.
+
+- **`HARRBOR_RELAY_CONCURRENCY`** — default `8`
+  Simultaneous `ffprobe-full` invocations. Excess requests queue rather than
+  fanning out unbounded.
+- **`HARRBOR_RELAY_TIMEOUT_SEC`** — default `45`
+  Maximum duration of a single invocation.
+- **`HARRBOR_RELAY_QUEUE_TIMEOUT_SEC`** — default `20`
+  How long a request waits for a concurrency slot before being rejected with
+  `503`. Rejecting is deliberate: a queued probe that outlives its caller is
+  pure waste.
+- **`HARRBOR_RELAY_MAX_BODY_BYTES`** — default `65536`
+  Request body cap, enforced before the concurrency semaphore is touched.
+- **`HARRBOR_RELAY_NEGATIVE_TTL_MIN`** — default `10080` (7 days), `0` disables
+  How long a *deterministic* probe failure — ffprobe ran and exited non-zero —
+  is replayed from cache with no upstream byte movement. This is what bounds
+  the provider cost of an Arr's infinite import-retry against a broken release.
+  Failures where the process could not run at all are never cached.
+- **`HARRBOR_FFPROBE_FULL_PATH`** — default `/usr/local/bin/ffprobe-full`
+  Where the network-capable static binary is staged inside the image. Change
+  only if you have restaged it yourself.
+
+### Item lifecycle
+
+- **`HARRBOR_CLEANUP_HOURS`** — default `8`
+- **`HARRBOR_RECONCILE_INTERVAL_SEC`** — default `300`
+  Cadence of the reconcile pass that re-checks state against the Arrs.
+- **`HARRBOR_READY_AUTO_REMOVE_SEC`** — default `1800`
+  How long a Ready item lingers before it is automatically removed from the
+  download-client view. Too short and an Arr may not have polled yet.
+- **`HARRBOR_NEVER_PLAYED_UNCACHED_HOURS`** — default `24`
+  How long an uncached item that has never been played is kept before cleanup
+  reclaims it.
+- **`HARRBOR_FAILED_RETENTION_MIN`** / **`HARRBOR_FAILED_RETENTION_HOURS`**
+  — default `5` minutes
+  How long failed items are retained before pruning, in whichever unit you
+  prefer. Raise it if you want longer to inspect failures via `deadletter`.
+- **`HARRBOR_FAILED_PRUNE_INTERVAL_SEC`** — default `120`
+  How often that prune runs.
+
+### Cache and probing
+
+- **`HARRBOR_DISK_CACHE_PATH`**
+  Where the disk cache lives inside the container. Relevant only in `disk` or
+  `full` cache mode.
+- **`HARRBOR_PINNED_BUDGET_MB`** — default `1024`
+  Ceiling on pinned (hot-head and keep-warm) bytes. This is the budget prewarm
+  and keep-warm compete for; raising `PREWARM_HOTHEAD_MB` without raising this
+  simply causes earlier eviction.
+- **`HARRBOR_PROBE_BYTES`** — default `1048576` (1 MiB)
+  Bytes fetched for a media probe. Lower it only if probes are expensive on
+  your provider and you accept less reliable format detection.
+
+### Torrent availability
+
+- **`HARRBOR_TORRENT_AVAILABILITY_TTL_HOURS`** — default `72`
+  How long a recorded availability observation is treated as current. Provider
+  cache state changes over time, so a stale observation should not be trusted;
+  lower it if you see grabs accepted against content that has since fallen out
+  of the provider's cache.
+- **`HARRBOR_TORRENT_DECAYAUDIT_ENABLED`** — default `true`
+  Gates the torrent-side decay audit.
+
+### Provider plan overrides
+
+- **`HARRBOR_PROVIDER_TORBOX_PLAN_SLOTS`**, **`HARRBOR_PROVIDER_TORBOX_PLAN_MAX_BYTES`**
+  Override the concurrency slots and size ceiling normally discovered from your
+  TorBox plan. Detection is reliable, so these exist for the case where it is
+  wrong or unavailable — an override that is *higher* than your real plan will
+  produce provider-side rejections, not extra capacity.
+
+### Connector and strm mode
+
+- **`HARRBOR_DOCKERPROXY_LISTEN`**, **`HARRBOR_DOCKERPROXY_SOCKET`**
+  Listen address and Docker socket path for the scoped connector. Defaults suit
+  the generated Compose; change them only alongside it.
+- **`HARRBOR_STRM_WRAPPER`**
+  Marker used to identify the installed ffmpeg wrapper, so DarkHarrbor can
+  recognise and maintain its own shim rather than overwriting someone else's.
+- **`HARRBOR_STUB_AUTHORITY`** — default `db`
+  Which side is authoritative for on-disk stub and `.strm` state. `db` means
+  the database wins and the startup consistency sweep restores files from it.
+  Changing this disables that healing.
+
+### Diagnostics and miscellaneous
+
+- **`HARRBOR_METRICS_ENABLED`** — default `true`
+  Serves the Prometheus `/metrics` endpoint.
+- **`HARRBOR_ERRORJOURNAL_MAX_ENTRIES`** — default `20`
+  Entries kept in the error journal surfaced by `/healthz`.
+- **`HARRBOR_IDENTITY_STRICTNESS`** — default `warn`
+  How hard identity mismatches are enforced. `warn` records without blocking.
+- **`HARRBOR_DOCTOR_TIMEOUT_SECONDS`**
+  Overall bound on a `doctor` run. Raise it if you have many providers and Arrs
+  and the run is being cut short.
+- **`HARRBOR_DEMO_TIMEOUT_SECONDS`**
+  Bound on the `demo` command's end-to-end run.
+- **`HARRBOR_TUNING_FILE`**
+  Overrides the path to `darkharrbor.conf`. Exists mainly for tests and unusual
+  mounts; normal deployments should leave it alone.
+- **`HARRBOR_SAB_NZB_KEY`**
+  A sealed credential rather than a tuning value — the SABnzbd-compatibility
+  NZB key. Set it through the wizard, not by hand.
+
+### Retired keys
+
+- **`HARRBOR_DIRECT_STREAM`** — **removed and ignored.** Setting it produces a
+  startup warning and nothing else. DarkHarrbor always proxies stream bytes
+  now, so there is no direct-stream mode to select.
 
 ## Subcommands
 
