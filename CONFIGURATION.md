@@ -2105,6 +2105,22 @@ so a value set in Compose is overridden by the same key here.
 
 ## Subcommands
 
+Every command below runs inside the container. The installer offers to place a
+`darkharrbor` command in `~/.local/bin` so you can invoke them directly —
+`darkharrbor doctor` rather than the full
+`docker compose -f ./.darkharrbor/compose.yml exec darkharrbor darkharrbor doctor`.
+The deployment path is baked in when it is generated, so it works from any
+directory, and it falls back to a disposable container when the deployment is
+stopped. Arguments are forwarded verbatim, including flags and pipes.
+
+Set `DARKHARRBOR_INSTALL_CLI=1` (or `0`) to decide without a prompt, which is
+what headless `--answers-file` runs need; `DARKHARRBOR_CLI_DIR` overrides the
+destination. A non-interactive run that sets neither installs nothing. For a
+hand-written Compose deployment, `scripts/darkharrbor` in the repository is the
+same wrapper — point it at your file with `DARKHARRBOR_COMPOSE`. Install-level
+operations (`--upgrade`, `--restore`, `--snapshots`, `--uninstall`) belong to
+`install.sh`, not this command.
+
 Verbatim output of `darkharrbor help` (also `-h`, `--help`; source:
 `printCLIUsage`, `src/cmd/darkharrbor/main.go`), reproduced here rather than
 paraphrased so this table can't quietly drift from what the binary actually

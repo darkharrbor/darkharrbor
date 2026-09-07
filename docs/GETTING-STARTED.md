@@ -456,6 +456,32 @@ storage — a password manager, an encrypted note, anywhere off this host —
 then delete `./.darkharrbor/handoff/`. Currently a manual step, both
 halves of it; there's no automatic cleanup yet.
 
+## The `darkharrbor` command
+
+Right at the end, the installer offers to put a `darkharrbor` command in
+`~/.local/bin`. Say yes and every CLI example in these docs shortens to
+what it actually reads like:
+
+```sh
+darkharrbor doctor
+darkharrbor backup snapshot
+darkharrbor reactive-pending -action list
+```
+
+It works from any directory — the deployment path is written into the
+command when it's generated — and it keeps working when the container is
+stopped, which is exactly when you want diagnostics. Arguments pass
+through untouched, so `darkharrbor doctor -json | jq` behaves.
+
+Declining costs you nothing; the full Compose form below always works, and
+this page shows it throughout so both paths read the same. If you already
+run DarkHarrbor from a hand-written Compose file, `scripts/darkharrbor` in
+the repository does the same job — point it at your deployment with
+`DARKHARRBOR_COMPOSE=/path/to/docker-compose.yml`.
+
+It reaches the in-container CLI only. Upgrades, restores, snapshots and
+uninstall stay with `install.sh`, which owns the deployment itself.
+
 ## First checks
 
 Setup already ran `darkharrbor doctor` once at the very end, but it's
@@ -463,6 +489,8 @@ worth knowing you can run it again anytime, on demand, with nothing to
 set up:
 
 ```sh
+darkharrbor doctor
+# or, without the installed command:
 docker compose -f ./.darkharrbor/compose.yml exec darkharrbor darkharrbor doctor
 ```
 

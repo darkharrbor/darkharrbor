@@ -792,4 +792,66 @@ if PATH="$test_root/bin:$PATH" \
 fi
 ! grep -q '^pull ' "$test_root/docker.log" || { echo "project collision pulled images before failing" >&2; exit 1; }
 
+# Optional `darkharrbor` command. It is the only thing the installer writes
+# outside its install root, so each branch is pinned: opted in, opted out, and
+# the non-interactive default. DARKHARRBOR_CLI_DIR keeps every case inside the
+# test root -- a regression here would otherwise write into a real $HOME.
+mkdir -p "$test_root/media-cli" "$test_root/install-cli" "$test_root/cli-bin"
+chmod 0700 "$test_root/install-cli"
+: >"$test_root/docker.log"
+printf '\n\n%s\ny\n' "$test_root/media-cli" | \
+    PATH="$test_root/bin:$PATH" \
+    FAKE_DOCKER_LOG="$test_root/docker.log" \
+    DARKHARRBOR_INSTALL_DIR="$test_root/install-cli" \
+    DARKHARRBOR_VERSION=v1.0.0 \
+    DARKHARRBOR_HOST_PORT=18383 \
+    DARKHARRBOR_PRELOADED_IMAGES=1 \
+    DARKHARRBOR_INSTALL_CLI=1 \
+    DARKHARRBOR_CLI_DIR="$test_root/cli-bin" \
+    "$repo_root/install.sh" >/dev/null
+[[ -f "$test_root/cli-bin/darkharrbor" ]] || { echo "opted-in CLI command was not installed" >&2; exit 1; }
+[[ $(stat -c '%a' "$test_root/cli-bin/darkharrbor") == 755 ]] || { echo "CLI command is not mode 0755" >&2; exit 1; }
+sh -n "$test_root/cli-bin/darkharrbor" || { echo "generated CLI command is not valid sh" >&2; exit 1; }
+grep -qF -- "$test_root/install-cli/compose.yml" "$test_root/cli-bin/darkharrbor" || \
+    { echo "CLI command does not target its own deployment" >&2; exit 1; }
+grep -qF -- 'DARKHARRBOR_COMPOSE' "$test_root/cli-bin/darkharrbor" || \
+    { echo "CLI command lost its deployment override" >&2; exit 1; }
+# A stopped deployment must still be reachable, otherwise the command is
+# useless in exactly the situation that needs diagnostics.
+grep -qF -- 'run --rm --no-deps' "$test_root/cli-bin/darkharrbor" || \
+    { echo "CLI command cannot reach a stopped deployment" >&2; exit 1; }
+# Piped invocations must suppress the TTY; the wizard hard-fails under a
+# pseudo-TTY on non-interactive stdin.
+grep -qF -- 'exec -T darkharrbor' "$test_root/cli-bin/darkharrbor" || \
+    { echo "CLI command does not disable the TTY when piped" >&2; exit 1; }
+
+mkdir -p "$test_root/media-cli-off" "$test_root/install-cli-off" "$test_root/cli-bin-off"
+chmod 0700 "$test_root/install-cli-off"
+printf '\n\n%s\ny\n' "$test_root/media-cli-off" | \
+    PATH="$test_root/bin:$PATH" \
+    FAKE_DOCKER_LOG="$test_root/docker.log" \
+    DARKHARRBOR_INSTALL_DIR="$test_root/install-cli-off" \
+    DARKHARRBOR_VERSION=v1.0.0 \
+    DARKHARRBOR_HOST_PORT=18384 \
+    DARKHARRBOR_PRELOADED_IMAGES=1 \
+    DARKHARRBOR_INSTALL_CLI=0 \
+    DARKHARRBOR_CLI_DIR="$test_root/cli-bin-off" \
+    "$repo_root/install.sh" >/dev/null
+[[ ! -e "$test_root/cli-bin-off/darkharrbor" ]] || { echo "opted-out CLI command was installed anyway" >&2; exit 1; }
+
+# No TTY and no explicit choice must never write to the user's $HOME.
+mkdir -p "$test_root/media-cli-default" "$test_root/install-cli-default" "$test_root/cli-bin-default"
+chmod 0700 "$test_root/install-cli-default"
+printf '\n\n%s\ny\n' "$test_root/media-cli-default" | \
+    PATH="$test_root/bin:$PATH" \
+    FAKE_DOCKER_LOG="$test_root/docker.log" \
+    DARKHARRBOR_INSTALL_DIR="$test_root/install-cli-default" \
+    DARKHARRBOR_VERSION=v1.0.0 \
+    DARKHARRBOR_HOST_PORT=18385 \
+    DARKHARRBOR_PRELOADED_IMAGES=1 \
+    DARKHARRBOR_CLI_DIR="$test_root/cli-bin-default" \
+    "$repo_root/install.sh" >/dev/null
+[[ ! -e "$test_root/cli-bin-default/darkharrbor" ]] || \
+    { echo "non-interactive install wrote a CLI command without being asked" >&2; exit 1; }
+
 echo "installer verification: OK"

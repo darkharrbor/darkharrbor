@@ -1,0 +1,73 @@
+#!/bin/sh
+# DarkHarrbor CLI wrapper.
+#
+# Forwards every argument verbatim to the darkharrbor binary inside the
+# deployment, so `darkharrbor doctor`, `darkharrbor backup snapshot` and
+# `darkharrbor reactive-pending -action list` work from any directory.
+#
+# Deployment resolution, in order:
+#   1. $DARKHARRBOR_COMPOSE            (a manual Compose deployment, or an override)
+#   2. ./.darkharrbor/compose.yml      (installer deployment, run from its directory)
+#   3. $HOME/.darkharrbor/compose.yml
+#
+# install.sh generates an equivalent wrapper with the deployment path already
+# baked in, which is what makes it work from anywhere. This copy is for manual
+# Compose installs: point it at your file with DARKHARRBOR_COMPOSE.
+#
+# Install-level operations (upgrade, restore, snapshots, uninstall) deliberately
+# stay with install.sh. This wrapper only reaches the in-container CLI.
+set -eu
+
+command -v docker >/dev/null 2>&1 || {
+	echo "darkharrbor: docker is not installed or not on PATH" >&2
+	exit 1
+}
+
+compose=""
+if [ -n "${DARKHARRBOR_COMPOSE:-}" ]; then
+	compose=$DARKHARRBOR_COMPOSE
+	[ -f "$compose" ] || {
+		echo "darkharrbor: DARKHARRBOR_COMPOSE is set but not a file: $compose" >&2
+		exit 1
+	}
+else
+	for candidate in "./.darkharrbor/compose.yml" "$HOME/.darkharrbor/compose.yml"; do
+		if [ -f "$candidate" ]; then
+			compose=$candidate
+			break
+		fi
+	done
+fi
+
+[ -n "$compose" ] || {
+	echo "darkharrbor: no deployment found." >&2
+	echo "  Set DARKHARRBOR_COMPOSE to your Compose file, or run from a directory" >&2
+	echo "  containing .darkharrbor/compose.yml." >&2
+	exit 1
+}
+
+# `docker compose` allocates a TTY by default; -T disables it. Interactive
+# commands (setup, configure) need the TTY, piped ones (doctor -json | jq)
+# must not have it -- the wizard hard-fails under a pseudo-TTY on piped stdin.
+if [ -t 0 ] && [ -t 1 ]; then
+	interactive=1
+else
+	interactive=0
+fi
+
+# exec into the running service when it is up; otherwise a disposable
+# container, so the CLI still works on a stopped deployment -- which is
+# exactly when `doctor` is wanted.
+if [ -n "$(docker compose -f "$compose" ps --status running -q darkharrbor 2>/dev/null)" ]; then
+	if [ "$interactive" = 1 ]; then
+		exec docker compose -f "$compose" exec darkharrbor darkharrbor "$@"
+	else
+		exec docker compose -f "$compose" exec -T darkharrbor darkharrbor "$@"
+	fi
+else
+	if [ "$interactive" = 1 ]; then
+		exec docker compose -f "$compose" run --rm --no-deps darkharrbor "$@"
+	else
+		exec docker compose -f "$compose" run --rm --no-deps -T darkharrbor "$@"
+	fi
+fi
