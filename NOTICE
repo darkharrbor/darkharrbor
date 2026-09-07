@@ -1,0 +1,18 @@
+Dark Harrbor - Attribution Notice
+==================================
+
+Dark Harrbor is a provider-agnostic lazy-materialize media core for the arr
+stack. It was designed with reference to and inspiration from several open-source
+projects:
+
+  - TorBoxarr    - TorBox API integration patterns
+  - DebriDav     - Debrid-based media streaming approach
+  - nzbget       - NZB download client (NNTP streaming concepts)
+  - nzbdav       - NZB-to-WebDAV integration patterns
+
+These projects influenced the design and implementation approach. Dark Harrbor
+does not embed or derive from their source code. All original implementation
+is MIT-licensed.
+
+If you believe attribution is missing for a referenced project, please open
+an issue or contact the maintainers.

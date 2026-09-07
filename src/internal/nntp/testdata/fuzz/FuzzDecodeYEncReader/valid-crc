@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("=ybegin line=128 size=3 name=test.bin\r\nklm\r\n=yend size=3 pcrc32=a3830348\r\n")

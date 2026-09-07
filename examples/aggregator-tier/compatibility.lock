@@ -1,0 +1,10 @@
+# Shell-readable compatibility lock. Keep this file non-secret.
+# scripts/verify-release.sh requires Compose defaults to match these references.
+COMPATIBILITY_CONTRACT=aiostreams-v2.31-torznab-full-url
+COMPATIBILITY_RECORDED_AT=2026-08-29
+COMPATIBILITY_PROVENANCE_DARKHARRBOR=0797ad6a7f634a4709b800a51dc29e908de1bc05
+AIOSTREAMS_VERSION=2.31.1
+AIOSTREAMS_IMAGE=ghcr.io/viren070/aiostreams@sha256:26d93653c3a5d0835db9189d6aca21d05614e68107c4d4a3ec7196b60c88c3bc
+STREMTHRU_VERSION=digest-2026-08-28
+STREMTHRU_IMAGE=muniftanjim/stremthru@sha256:096f8e1fd8243840c433964577cc406bd1a0859f2fa73f658ccc367dc4295bd4
+SELENIUM_CHROMIUM_IMAGE=selenium/standalone-chromium@sha256:1d3d834a2ce93f26cc0d0ae3c61abd189755b32649f5c356c6c5cf9502aa397e

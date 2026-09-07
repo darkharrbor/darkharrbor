@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"status\":\"success\",\"transfers\":[{\"id\":\"t\",\"name\":\"n\",\"status\":\"running\",\"progress\":0.5,\"folder_id\":null,\"file_id\":null}]}")

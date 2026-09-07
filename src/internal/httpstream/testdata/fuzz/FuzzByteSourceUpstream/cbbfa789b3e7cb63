@@ -1,0 +1,8 @@
+go test fuzz v1
+int(206)
+string("")
+string("\xeb\xa5\xe8")
+string("0")
+int(3)
+int64(95)
+int(29)

@@ -1,0 +1,24 @@
+# Secrets
+.env
+.env.*
+
+# Development
+.git
+.gitignore
+*.md
+LICENSE
+NOTICE
+
+# Build artifacts
+*.db
+*.db-shm
+*.db-wal
+data/
+logs/
+tmp/
+cache/
+
+# IDE
+.DS_Store
+Thumbs.db
+*.swp

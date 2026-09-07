@@ -1,0 +1,4 @@
+go test fuzz v1
+[]byte("\x1aEߣ \x00\x0000000000")
+int64(160)
+int64(641)

@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("Rar!\\x1a\\x07\\x00")

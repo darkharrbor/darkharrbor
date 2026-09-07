@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"zipUrls\":[\"https://cdn.example/movie.zip\"],\"behaviorHints\":{\"filename\":\"movie.mkv\"}}")

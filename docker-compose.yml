@@ -1,0 +1,95 @@
+# DarkHarrbor public deployment definition.
+#
+# Compose owns container wiring only. User configuration is persisted under
+# /config by `darkharrbor setup` / `darkharrbor configure`; credentials never
+# belong in this file. Provider/backend-specific settings should not be added
+# here for an individual installation.
+
+name: darkharrbor
+
+services:
+  darkharrbor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: darkharrbor
+    image: darkharrbor:latest
+    container_name: darkharrbor
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
+
+    # Only deployment invariants live here. Persistent runtime configuration
+    # and credentials live under /config, outside Compose.
+    environment:
+      # Primary API remains private to arr-net. Port 8382 is a separate,
+      # restricted Stremio client listener and stays closed in internal mode.
+      HARRBOR_SERVER_ADDRESS: ":8381"
+      HARRBOR_SERVER_BASE_URL: "http://darkharrbor:8381"
+      HARRBOR_STREMIO_CLIENT_ADDRESS: ":8382"
+      HARRBOR_DATABASE_PATH: "/config/darkharrbor.db"
+      HARRBOR_DATA_ROOT: "/data"
+      HARRBOR_REPORTED_PATH_PREFIX: "/mnt/darkharrbor"
+      HARRBOR_SECRETS_FILE: "/config/secrets.sealed"
+      HARRBOR_SECRETS_UNLOCK: "keyfile"
+      HARRBOR_SECRETS_KEY_FILE: "/config/secrets.key"
+      HARRBOR_DOCKER_PROXY_URL: "http://docker-proxy:2375"
+
+    ports:
+      - "8382:8382"
+
+    volumes:
+      - darkharrbor-config:/config
+      - darkharrbor-backups:/backup
+      - /mnt/darkharrbor:/data
+    networks:
+      - arr-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8381/healthz | grep -q ok || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # Scoped Docker Engine API access used only when .strm-mode discovery/shim
+  # installation is enabled. The service is opt-in via the `strm` profile.
+  docker-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dockerproxy
+    image: darkharrbor-dockerproxy:latest
+    container_name: darkharrbor-docker-proxy
+    restart: unless-stopped
+    profiles: ["strm"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
+    environment:
+      # Comma-separated container names explicitly approved by the operator.
+      # An empty value keeps discovery visible but denies every Docker exec.
+      HARRBOR_DOCKERPROXY_TARGETS: "${HARRBOR_DOCKERPROXY_TARGETS:-}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - arr-net
+
+networks:
+  arr-net:
+    external: true
+
+volumes:
+  darkharrbor-config:
+    driver: local
+  darkharrbor-backups:
+    driver: local

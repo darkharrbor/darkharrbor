@@ -1,0 +1,49 @@
+# Binaries
+/darkharrbor
+*.exe
+*.test
+*.out
+
+# Test / coverage output
+*.coverprofile
+coverage.txt
+coverage.out
+
+# Secrets and local config — never commit (ship .env.example only)
+.env
+.env.local
+!.env.example
+*.sealed
+secrets.sealed
+*.key
+secrets.key
+
+# Local runtime data (SQLite store, materialized output)
+*.db
+*.db-shm
+*.db-wal
+darkharrbor.db
+/config/
+/data/
+/.darkharrbor/
+
+# Editor / OS cruft
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# Logs
+*.log
+
+# build artifact (go build ./cmd/darkharrbor without -o)
+/src/darkharrbor
+
+# local deployment override (contains a Prowlarr API key; keep out of git like .env)
+docker-compose.override.yml
+# host-staged network-capable ffprobe for .strm mode (regenerable artifact)
+/strm-mode/ffprobe-full
+
+# one-off fusion-audit synthesis artifact (superseded by docs/REDESIGN-reality-audit.md)
+reality synthesis audit.md

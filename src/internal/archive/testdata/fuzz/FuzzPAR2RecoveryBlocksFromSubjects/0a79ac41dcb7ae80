@@ -1,0 +1,2 @@
+go test fuzz v1
+string(".vol000\xe7\xe7000")

@@ -1,0 +1,8 @@
+.env
+*.env
+!.env.example
+
+# REL-03 private API inputs and full user-config snapshots.
+credentials.json
+baseline.json
+desired.json

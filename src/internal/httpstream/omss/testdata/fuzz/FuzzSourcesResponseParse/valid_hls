@@ -1,0 +1,2 @@
+go test fuzz v1
+string("{\"id\":\"response-hls\",\"sources\":[{\"id\":\"hls-main\",\"url\":\"https://media.invalid/master.m3u8\",\"streamable\":true,\"type\":\"hls\",\"quality\":\"1080p\",\"provider\":{\"id\":\"fixture\",\"name\":\"Fixture\"}}]}")

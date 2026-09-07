@@ -1,0 +1,2 @@
+go test fuzz v1
+string("[2001:db8::7]:443")

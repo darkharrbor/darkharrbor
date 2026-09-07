@@ -1,0 +1,7 @@
+go test fuzz v1
+string("Show.S01E02.mp4")
+int(1)
+int(2)
+int(2)
+string("1983-09-13")
+string("The Beastly Shadow")

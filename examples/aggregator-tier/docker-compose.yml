@@ -1,0 +1,129 @@
+# Example aggregator-tier bundle for DarkHarrbor.
+#
+# Every DarkHarrbor-REQUIRED value is present and correct. Everything with a
+# ${VAR} placeholder is yours to supply -- see .env.example.
+#
+# Read docs/AGGREGATOR-INTEGRATION.md before changing anything here. Several
+# values below exist to prevent specific faults and are NOT preferences; each
+# one carries its reason inline so it survives a future tidy-up.
+#
+# Written against AIOStreams and StremThru because they are what the reference
+# deployment runs. DarkHarrbor takes no dependency on either -- the contract in
+# the guide is what matters, and another aggregator satisfying it works equally.
+# The defaults below are immutable and mirrored in compatibility.lock. Override
+# them only while running scripts/verify-aggregator-compatibility.sh against an
+# explicit candidate digest.
+
+services:
+  aiostreams:
+    image: "${AIOSTREAMS_IMAGE:-ghcr.io/viren070/aiostreams@sha256:26d93653c3a5d0835db9189d6aca21d05614e68107c4d4a3ec7196b60c88c3bc}"
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # --- DarkHarrbor proxy contract. REQUIRED. -----------------------------
+      # Coverage is recorded ONLY for bytes DarkHarrbor delivers, so anything
+      # not proxied here can never reach reactive commit no matter how the
+      # DarkHarrbor side is configured.
+      FORCE_PROXY_ENABLED: "true"
+      FORCE_PROXY_ID: "mediaflow"
+      # DarkHarrbor's PRIVATE listener. Container-internal on purpose: this
+      # carries the full API and must never be published.
+      FORCE_PROXY_URL: "http://darkharrbor:8381"
+      # EMPTY LIST = every lane can commit. A named list is the common default,
+      # looks entirely healthy, and silently limits commit to the services it
+      # names. Setting this to anything non-empty is a decision about which
+      # lanes can reach your library, not a tuning tweak.
+      FORCE_PROXY_PROXIED_SERVICES: "[]"
+      FORCE_PROXY_DISABLE_PROXIED_ADDONS: "true"
+      # The aggregator sends this as `api_password` on EVERY MediaFlow call and
+      # it must equal DarkHarrbor's HARRBOR_MEDIAFLOW_PASSWORD. For t2/t3 setup
+      # generates and seals the value, then prints it exactly once for transfer
+      # to FORCE_PROXY_CREDENTIALS. Empty or mismatched values make /proxy/ip and
+      # /generate_urls answer 503/403, so nothing is proxied and reactive commit
+      # cannot fire.
+      FORCE_PROXY_CREDENTIALS: "${FORCE_PROXY_CREDENTIALS}"
+
+      # --- Shared tier. REQUIRED. --------------------------------------------
+      # The SHIPPED DEFAULT is a public instance. When it goes down, EVERY
+      # debrid source loses resolution at once, because the shared tier is the
+      # resolution path for all of them. Self-hosting is required, not advised.
+      # Restoring these to defaults is itself the failure mode.
+      BUILTIN_STREMTHRU_URL: "http://stremthru:8080"
+      # NOTE the /v0/torznab suffix. This is a TORZNAB preset: the aggregator
+      # appends /api, so a .../stremio/torz value yields
+      # GET /stremio/torz/api?t=caps and 404s.
+      # NOTE ALSO: the Torz addon carries its OWN url field and the preset
+      # resolves `options.url || DEFAULT_URL`, so this variable seeds NEW
+      # configs only. If an addon was already saved, fix it in the addon's own
+      # configuration -- this line will appear to work and do nothing.
+      STREMTHRU_TORZ_URL: "http://stremthru:8080/v0/torznab"
+      STREMTHRU_STORE_URL: "http://stremthru:8080/stremio/store"
+
+      # --- Fault-prevention. NOT preferences. --------------------------------
+      # The aggregator rate-limits even when SELF-HOSTED (5 req/10s on the
+      # stream API). DarkHarrbor calls it far more often than a human client.
+      # Measured before: 765 DarkHarrbor / 320 Prowlarr / 15 SABnzbd rejections.
+      # Zero after.
+      DISABLE_RATE_LIMITS: "true"
+      # Required wherever the container network has IPv6 DISABLED while the
+      # host has working IPv6. Node/undici happy-eyeballs does not fall back
+      # cleanly and produces CORRUPT TLS READS -- roughly 2,951 failed debrid
+      # calls -- while curl on the same host falls back fine, so the network
+      # looks healthy under any manual test.
+      NODE_OPTIONS: "--dns-result-order=ipv4first"
+      # Newznab Search Mode "both" instantiates TWO addons per indexer. Hitting
+      # the ceiling refuses the ENTIRE config save, not just the new addon.
+      MAX_ADDONS: "25"
+
+      # --- Yours. ------------------------------------------------------------
+      # Must be reachable from every viewing device.
+      BASE_URL: "${AIOSTREAMS_BASE_URL}"
+      SECRET_KEY: "${AIOSTREAMS_SECRET_KEY}"
+    ports:
+      - "${AIOSTREAMS_BIND}:3000"
+    volumes:
+      - aiostreams-data:/app/data
+    networks:
+      - arr-net
+
+  stremthru:
+    image: "${STREMTHRU_IMAGE:-muniftanjim/stremthru@sha256:096f8e1fd8243840c433964577cc406bd1a0859f2fa73f658ccc367dc4295bd4}"
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # REACHABILITY -- read docs/AGGREGATOR-INTEGRATION.md section 4 before
+      # changing this. Who must reach it depends on your PROXY POSTURE:
+      #   universal proxying (FORCE_PROXY_PROXIED_SERVICES=[]) -> only
+      #     DarkHarrbor fetches these URLs, so a container-internal name is
+      #     correct and is what this bundle ships.
+      #   selective proxying -> CLIENTS fetch them, and this must be an address
+      #     every viewing device can reach.
+      # The two requirements CONFLICT and one variable cannot satisfy both.
+      # Change this and the proxied-services filter together or neither.
+      STREMTHRU_BASE_URL: "http://stremthru:8080"
+      STREMTHRU_PORT: "8080"
+      # Dashboard auth; ALSO the auth token the aggregator sends for the
+      # shared tier's usenet service, in user:password form.
+      STREMTHRU_AUTH: "${STREMTHRU_AUTH}"
+      # REQUIRED for usenet: the vault stores NNTP credentials entered in the
+      # dashboard. ONE-WAY -- lose it and every stored credential becomes
+      # unreadable, the same class of irreversibility as the seal password.
+      STREMTHRU_VAULT_SECRET: "${STREMTHRU_VAULT_SECRET}"
+      STREMTHRU_DATA_DIR: "/app/data"
+    ports:
+      - "${STREMTHRU_BIND}:8080"
+    volumes:
+      - stremthru-data:/app/data
+    networks:
+      - arr-net
+
+networks:
+  arr-net:
+    name: "${AGGREGATOR_NETWORK:-arr-net}"
+    external: true
+
+volumes:
+  aiostreams-data:
+  stremthru-data:

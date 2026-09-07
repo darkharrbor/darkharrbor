@@ -1,0 +1,37 @@
+name: Aggregator compatibility
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 7 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  latest-candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Resolve latest AIOStreams candidate
+        id: candidate
+        shell: bash
+        run: |
+          digest=$(docker buildx imagetools inspect ghcr.io/viren070/aiostreams:latest --format '{{json .Manifest.Digest}}' | tr -d '"')
+          test -n "$digest"
+          echo "image=ghcr.io/viren070/aiostreams@$digest" >> "$GITHUB_OUTPUT"
+      - name: Clean-install contract
+        id: clean
+        continue-on-error: true
+        run: ./scripts/verify-aggregator-compatibility.sh clean '${{ steps.candidate.outputs.image }}'
+      - name: Initialized-volume upgrade contract
+        id: upgrade
+        continue-on-error: true
+        run: ./scripts/verify-aggregator-compatibility.sh upgrade '${{ steps.candidate.outputs.image }}'
+      - name: Enforce both compatibility gates
+        run: |
+          test '${{ steps.clean.outcome }}' = success
+          test '${{ steps.upgrade.outcome }}' = success

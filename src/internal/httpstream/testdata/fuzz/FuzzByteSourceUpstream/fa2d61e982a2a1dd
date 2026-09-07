@@ -1,0 +1,8 @@
+go test fuzz v1
+int(206)
+string("")
+string("\xbf        ")
+string("0")
+int(7)
+int64(500)
+int(186)

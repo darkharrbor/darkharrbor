@@ -1,0 +1,2 @@
+go test fuzz v1
+string("\xfa=0,0\xa3=0")

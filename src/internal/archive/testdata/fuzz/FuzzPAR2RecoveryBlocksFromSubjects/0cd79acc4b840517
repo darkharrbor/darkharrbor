@@ -1,0 +1,2 @@
+go test fuzz v1
+string(".vol000+000.p\x80")

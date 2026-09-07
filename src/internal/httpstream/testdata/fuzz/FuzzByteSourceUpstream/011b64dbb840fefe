@@ -1,0 +1,8 @@
+go test fuzz v1
+int(206)
+string("")
+string("A\xee")
+string("")
+int(-78)
+int64(42)
+int(64)

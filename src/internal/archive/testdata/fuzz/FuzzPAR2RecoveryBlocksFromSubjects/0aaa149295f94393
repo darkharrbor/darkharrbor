@@ -1,0 +1,2 @@
+go test fuzz v1
+string(".\x98.\xa8.\xaa0000.\xba")

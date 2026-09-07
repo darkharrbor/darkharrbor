@@ -1,0 +1,2 @@
+go test fuzz v1
+string("\\\"release.7z.001\\\" yEnc")

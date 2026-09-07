@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"VERSION\":1,\"VERSION\":2,\"TTL\":-1,\"PATHWAY-PRIORITY\":[\"bad/path\"]}")

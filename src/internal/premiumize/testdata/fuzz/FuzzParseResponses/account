@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"status\":\"success\",\"premium_until\":2000,\"limit_used\":0.1,\"booster_points\":0}")

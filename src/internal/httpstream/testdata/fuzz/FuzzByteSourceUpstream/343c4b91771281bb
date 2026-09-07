@@ -1,0 +1,8 @@
+go test fuzz v1
+int(206)
+string("")
+string("A\x9d")
+string("0")
+int(-92)
+int64(500)
+int(74)

@@ -1,0 +1,95 @@
+# DarkHarrbor new-user Compose template.
+#
+# The checked-in docker-compose.yml is the canonical public deployment
+# definition. This example is intentionally kept as a commented onboarding
+# template for new users and release packaging. It is a complete standalone
+# Compose file, not an override.
+#
+# Credentials and provider-specific settings do NOT belong here:
+#   - `darkharrbor setup` performs first-run bootstrap and writes sealed secrets
+#   - `darkharrbor configure` writes non-secret runtime tuning under /config
+#
+# For a copy-based install, copy this file to docker-compose.yml, adjust the
+# host data path if needed, then run the setup wizard.
+
+name: darkharrbor
+
+services:
+  darkharrbor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: darkharrbor
+    image: darkharrbor:latest
+    container_name: darkharrbor
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
+
+    # Deployment invariants only. Installation-specific configuration is
+    # persisted under /config by the two wizard commands described above.
+    environment:
+      # Primary API remains private to arr-net. Port 8382 is a separate,
+      # restricted Stremio client listener and stays closed in internal mode.
+      HARRBOR_SERVER_ADDRESS: ":8381"
+      HARRBOR_SERVER_BASE_URL: "http://darkharrbor:8381"
+      HARRBOR_STREMIO_CLIENT_ADDRESS: ":8382"
+      HARRBOR_DATABASE_PATH: "/config/darkharrbor.db"
+      HARRBOR_DATA_ROOT: "/data"
+      HARRBOR_REPORTED_PATH_PREFIX: "/mnt/darkharrbor"
+      HARRBOR_SECRETS_FILE: "/config/secrets.sealed"
+      HARRBOR_SECRETS_UNLOCK: "keyfile"
+      HARRBOR_SECRETS_KEY_FILE: "/config/secrets.key"
+      HARRBOR_DOCKER_PROXY_URL: "http://docker-proxy:2375"
+
+    ports:
+      - "8382:8382"
+
+    volumes:
+      - darkharrbor-config:/config
+      - darkharrbor-backups:/backup
+      # Change HARRBOR_DATA_PATH on the host if your shared Arr media path is
+      # somewhere else. The container-side path remains /data.
+      - ${HARRBOR_DATA_PATH:-/mnt/darkharrbor}:/data
+    networks:
+      - arr-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8381/healthz | grep -q ok || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # Allowlisted Docker Engine sidecar used for Arr discovery, registration,
+  # shim/Jellyfin installation, and live .strm container events.
+  # Enable it for setup/.strm integrations with the `strm` profile.
+  docker-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dockerproxy
+    image: darkharrbor-dockerproxy:latest
+    container_name: darkharrbor-docker-proxy
+    restart: unless-stopped
+    profiles: ["strm"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - arr-net
+
+networks:
+  # DarkHarrbor expects to share the Arr stack's Docker network.
+  arr-net:
+    external: true
+
+volumes:
+  darkharrbor-config:
+    driver: local
+  darkharrbor-backups:
+    driver: local

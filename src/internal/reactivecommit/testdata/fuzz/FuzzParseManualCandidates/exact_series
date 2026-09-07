@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[{\"path\":\"/mnt/darkharrbor/tv/show.strm\",\"series\":{\"id\":1},\"episodes\":[{\"id\":2,\"seasonNumber\":1,\"episodeNumber\":1}]}]")
