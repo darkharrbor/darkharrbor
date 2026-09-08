@@ -871,7 +871,27 @@ func (s *Server) streamViaCache(w http.ResponseWriter, r *http.Request, item *st
 		var err error
 		src, total, contentType, ranged, err = initCDNSource(ctx, cdnURL, windowBytes, reresolve)
 		if err != nil {
-			s.log.Warn("stream: cdn cache probe failed, falling back to passthrough", "error", httpstream.Sanitize(err))
+			// PERF-4: the passthrough below is worth running only when it
+			// would do something different. initCDNSource re-resolves for a
+			// refresh-worthy STATUS but returns a transport error untouched,
+			// leaving the resolve cache unchanged -- so after an unreachable
+			// origin the caller's own "capability probing may have
+			// reresolved" lookup hands the passthrough back the identical
+			// URL, which pays the identical connect timeout for the
+			// identical failure. Two serial 10s TLS handshake timeouts was
+			// the measured shape of every dead-link play on this deployment:
+			// 20.1s to a 503 the first 10s had already determined.
+			//
+			// Skip it only when both halves of that hold -- the origin was
+			// never reached, and the URL really is the one just failed on --
+			// so a status-level failure, a range-incapable origin, and a
+			// genuinely re-resolved URL all keep the existing second attempt.
+			skipPassthrough := ctx.Err() == nil &&
+				httpstream.IsConnectLevel(err) &&
+				s.passthroughWouldReuseURL(itemID, fileID, cdnURL)
+			s.log.Warn("stream: cdn cache probe failed",
+				"error", httpstream.Sanitize(err),
+				"passthrough_skipped", skipPassthrough)
 			// TS-4.1: this is the OTHER real "stream-time" broken/removed
 			// detection trigger the frozen T5 decision names, distinct from
 			// the mid-stream Stream() error path below -- a fresh playback
@@ -887,6 +907,14 @@ func (s *Server) streamViaCache(w http.ResponseWriter, r *http.Request, item *st
 				// playback failure signal TS-4.1 already established is
 				// exactly a negative own-traffic hash observation.
 				s.recordStreamAvailability(ctx, item, false)
+			}
+			if skipPassthrough {
+				// Same status the passthrough would have produced, ~10s
+				// sooner. Returning true means "the response is written",
+				// not "the stream succeeded"; the caller's egress meter is
+				// already guarded on bytes actually written.
+				http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
+				return true
 			}
 			return false
 		}

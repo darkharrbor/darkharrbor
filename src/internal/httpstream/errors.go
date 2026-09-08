@@ -1,11 +1,14 @@
 package httpstream
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/darkharrbor/darkharrbor/internal/outcome"
@@ -124,6 +127,42 @@ func ClassOf(err error) ErrClass {
 // Transient reports whether the class is a bounded-retry candidate.
 func (c ErrClass) Transient() bool {
 	return c == ClassBackendUnavailable || c == ClassRateLimited
+}
+
+// IsConnectLevel reports whether err means the origin was never reached at
+// all -- DNS failure, a dial that timed out or was refused, an unreachable
+// host, or a TLS handshake that never completed -- as opposed to an HTTP
+// response the origin actually sent.
+//
+// The distinction decides whether a second attempt against the SAME URL is
+// worth making. A status the origin returned may well differ on a different
+// request shape, or after a re-resolve; a connection that could not be
+// established says nothing about the request and everything about
+// reachability, so re-dialling the identical host only pays the same connect
+// timeout again for the same result. On this deployment that second attempt
+// was measured costing a flat extra 10s on every failed play.
+//
+// A caller-cancelled or caller-expired context is deliberately NOT
+// connect-level: the client went away, which is no evidence about the origin
+// (the same reasoning HR3.4 already applies to cancellations elsewhere).
+func IsConnectLevel(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return true
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.EHOSTUNREACH) ||
+		errors.Is(err, syscall.ENETUNREACH) {
+		return true
+	}
+	// net/http's TLS-handshake and dial timeouts both satisfy net.Error with
+	// Timeout() true, which is what makes the 10s handshake wall detectable
+	// here without matching on message text.
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 // urlishRe matches URL-shaped substrings (scheme://... or host:port/path

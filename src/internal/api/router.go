@@ -370,6 +370,18 @@ func trimInsertionCache[V any](cache map[string]V, order *[]string) int {
 
 // resolveEntryFor returns the cached entry for (itemID, fileID) if it exists
 // and is younger than resolveTTL; otherwise returns nil.
+// passthroughWouldReuseURL reports whether the legacy passthrough path would
+// re-request probedURL rather than a fresher one. It deliberately mirrors the
+// passthrough's own "capability probing may have reresolved to a fresh node"
+// lookup below, so PERF-4's skip can never discard an attempt that would in
+// fact have gone somewhere new.
+func (s *Server) passthroughWouldReuseURL(itemID, fileID, probedURL string) bool {
+	if cached := s.resolveEntryFor(itemID, fileID); cached != nil {
+		return cached.cdnURL == probedURL
+	}
+	return true
+}
+
 func (s *Server) resolveEntryFor(itemID, fileID string) *resolveCacheEntry {
 	v, ok := s.resolveCache.Load(resolveKey(itemID, fileID))
 	if !ok {

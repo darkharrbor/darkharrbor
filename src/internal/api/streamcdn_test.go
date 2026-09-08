@@ -34,11 +34,49 @@ func TestC02CDNProbeLogRedactsUpstreamURL(t *testing.T) {
 	s := &Server{cfg: &config.Config{}, log: log, streamCache: cache}
 	req := httptest.NewRequest(http.MethodGet, "/stream/item/0", nil)
 
-	if s.streamViaCache(httptest.NewRecorder(), req, nil, "item", "0", "http://127.0.0.1:1/media?token=must-not-appear", nil, nil, 1, "", nil, nil, nil, nil) {
-		t.Fatal("unreachable source unexpectedly served")
+	rec := httptest.NewRecorder()
+	// Port 1 refuses the connection, so this is PERF-4's connect-level case:
+	// the origin was never reached and nothing cached a fresher URL, so
+	// streamViaCache answers 503 itself rather than handing the caller a
+	// passthrough that would re-dial the same dead address for the same
+	// result. It reports true meaning "the response is written", not
+	// "the stream succeeded".
+	if !s.streamViaCache(rec, req, nil, "item", "0", "http://127.0.0.1:1/media?token=must-not-appear", nil, nil, 1, "", nil, nil, nil, nil) {
+		t.Fatal("an unreachable origin should be answered here, not delegated to the passthrough")
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+	if rec.Body.Len() != 0 && strings.Contains(rec.Body.String(), "must-not-appear") {
+		t.Fatalf("response body leaked upstream URL: %s", rec.Body.String())
 	}
 	if got := logs.String(); strings.Contains(got, "must-not-appear") || strings.Contains(got, "http://") || strings.Contains(got, "token=") {
 		t.Fatalf("cdn probe log leaked upstream URL: %s", got)
+	}
+}
+
+// The passthrough must still run when the origin DID answer -- only an
+// unreachable one is short-circuited. A 403 is a response, not a
+// reachability failure, so the second attempt keeps its chance.
+func TestPERF4StatusFailureStillFallsBackToPassthrough(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer origin.Close()
+
+	var logs bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&logs, nil))
+	cache := rangecache.New(rangecache.Config{DiskCachePath: t.TempDir(), DiskCacheSizeMB: 1}, log)
+	t.Cleanup(cache.Close)
+	s := &Server{cfg: &config.Config{}, log: log, streamCache: cache}
+	req := httptest.NewRequest(http.MethodGet, "/stream/item/0", nil)
+
+	rec := httptest.NewRecorder()
+	if s.streamViaCache(rec, req, nil, "item", "0", origin.URL+"/media", nil, nil, 1, "", nil, nil, nil, nil) {
+		t.Fatal("a status-level probe failure must fall through to the passthrough, not answer here")
+	}
+	if !strings.Contains(logs.String(), "passthrough_skipped=false") {
+		t.Fatalf("expected the skip decision to be logged as false: %s", logs.String())
 	}
 }
 
