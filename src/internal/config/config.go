@@ -243,10 +243,11 @@ type Config struct {
 		// Default 45.
 		TimeoutSec int
 		// NextEpisodeThreshold is the playback-fraction (0.0-1.0) past which
-		// NextEpisodePrewarm actually fires. Default 0.85. No current lane
-		// reaches an end-of-playback signal into this row's call sites, so
-		// this value is exercised only by deterministic tests until a future
-		// consuming row (HR5.4) wires a live playback-position signal.
+		// NextEpisodePrewarm actually fires. Default 0.85. Both consuming
+		// lanes derive the fraction from the served byte range and call in
+		// only after a clean stream: api.queueNextEpisodePrewarm (HTTP) and
+		// api.queueNextEpisodeNNTPPrewarm (NNTP, RAR-split items only, since
+		// no other NZB shape persists a per-file size to divide by).
 		NextEpisodeThreshold float64
 		// MinReadaheadWorkers / MaxReadaheadWorkers bound
 		// AdaptiveReadahead's recommendation. Defaults 1 and 4, paired with

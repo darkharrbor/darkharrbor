@@ -2278,10 +2278,18 @@ titles nobody watches.
   capacity default below; raising the maximum without raising that capacity
   just produces workers that queue.
 - **`HARRBOR_PREWARM_NEXTEP_THRESHOLD`** — default `0.85`
-  Playback fraction past which next-episode prewarm would fire. **Currently
-  inert**: no lane yet reaches an end-of-playback position signal into this
-  code path, so the value is exercised only by tests. Documented because it is
-  settable and reads as if it works; changing it has no effect today.
+  Playback fraction past which next-episode prewarm fires. Both lanes derive
+  the fraction from the served byte range — `(range end + 1) / file size` —
+  and only after a clean, non-aborted stream, so the look-ahead stays off the
+  current playback's critical path. Lowering it starts the next episode
+  earlier at the cost of competing with the stream still in progress; raising
+  it toward `1.0` restricts prewarm to viewers who finish an episode.
+  Coverage differs by lane. The HTTP lane prewarms any episode whose resolve
+  key carries exact season/episode identity and whose successor is a single
+  range-verified file. The NNTP lane covers **RAR-split NZB items only**: a
+  direct-mkv or ZIP NZB item persists no per-file size, so no playback
+  fraction can be derived for it and next-episode prewarm never fires there
+  regardless of this setting.
 
 ### Readahead
 
