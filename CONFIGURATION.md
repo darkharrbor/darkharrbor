@@ -2291,6 +2291,28 @@ titles nobody watches.
   fraction can be derived for it and next-episode prewarm never fires there
   regardless of this setting.
 
+### Unreachable stream origins
+
+- **`HARRBOR_STREAM_UNREACHABLE_TTL_SEC`** — default `300` (5 minutes), `0`
+  disables
+  How long a stream origin that could not be reached **at all** is replayed as
+  an immediate `503` instead of paying its connect timeout again. "Could not
+  be reached" means no HTTP response happened: DNS failure, connection
+  refused, unreachable host, or a dial/TLS-handshake timeout. An origin that
+  answered — even with an error status — is never cached here, because a
+  different request shape or a re-resolve may still succeed.
+
+  Without this, a dead provider link costs a full connect timeout on *every*
+  range request, and a media player issues several per play. The entry is
+  keyed on the failed URL, not the item, so a repair or re-resolve produces a
+  different URL and is never suppressed by it.
+
+  Raise it if your library holds many dead links and you want the failure to
+  be instant for longer. Lower it (or set `0`) if your upstream is prone to
+  brief network faults and you would rather re-try promptly than fail fast —
+  the TTL is the only thing bounding how long a recovered origin stays
+  wrongly suppressed.
+
 ### Readahead
 
 - **`HARRBOR_READAHEAD_ENABLED`** — default `true`

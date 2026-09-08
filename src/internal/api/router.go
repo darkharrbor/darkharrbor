@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base32"
 	"encoding/hex"
 	"encoding/json"
@@ -195,6 +196,14 @@ type Server struct {
 	// nextEpisodePrewarmed is HR5.4's bounded process-local reservation set.
 	// It prevents a completed episode from scheduling duplicate predictive
 	// work while leaving the shared experience service as the sole prewarmer.
+	// PERF-4: connect-level stream-origin failures, keyed by hashed URL, so a
+	// dead provider link fails fast instead of re-paying the connect timeout
+	// on every range request of every attempt. Insertion-ordered and bounded
+	// like the other ephemeral caches; expired entries swept by SweepCaches.
+	unreachableMu      sync.Mutex
+	unreachableOrigins map[string]time.Time
+	unreachableOrder   []string
+
 	nextEpisodeMu        sync.Mutex
 	nextEpisodePrewarmed map[string]struct{}
 	nextEpisodeOrder     []string
@@ -370,6 +379,73 @@ func trimInsertionCache[V any](cache map[string]V, order *[]string) int {
 
 // resolveEntryFor returns the cached entry for (itemID, fileID) if it exists
 // and is younger than resolveTTL; otherwise returns nil.
+// unreachableOriginKey hashes a stream URL into a stable, secret-free cache
+// key. The URL carries provider tokens, so it is never stored, logged, or
+// compared in the clear (DG-04, HS-1.9) -- the same hashed-source convention
+// HR7.4's health scorer already uses for its own per-source entries.
+func unreachableOriginKey(cdnURL string) string {
+	sum := sha256.Sum256([]byte(cdnURL))
+	return hex.EncodeToString(sum[:8])
+}
+
+// originRecentlyUnreachable reports whether this exact URL failed at the
+// connect level within the configured TTL, so a fresh attempt would only pay
+// the same connect timeout again. A media player issues several range
+// requests per play, so without this a single click on a dead item pays that
+// timeout once per request.
+func (s *Server) originRecentlyUnreachable(cdnURL string) bool {
+	ttl := s.unreachableTTL()
+	if ttl <= 0 {
+		return false
+	}
+	key := unreachableOriginKey(cdnURL)
+	s.unreachableMu.Lock()
+	defer s.unreachableMu.Unlock()
+	at, ok := s.unreachableOrigins[key]
+	if !ok {
+		return false
+	}
+	if time.Since(at) > ttl {
+		delete(s.unreachableOrigins, key)
+		return false
+	}
+	return true
+}
+
+// noteOriginUnreachable records a connect-level failure against this URL.
+func (s *Server) noteOriginUnreachable(cdnURL string) {
+	if s.unreachableTTL() <= 0 {
+		return
+	}
+	key := unreachableOriginKey(cdnURL)
+	s.unreachableMu.Lock()
+	defer s.unreachableMu.Unlock()
+	if s.unreachableOrigins == nil {
+		s.unreachableOrigins = make(map[string]time.Time)
+	}
+	if _, exists := s.unreachableOrigins[key]; !exists {
+		s.unreachableOrder = append(s.unreachableOrder, key)
+	}
+	s.unreachableOrigins[key] = time.Now()
+	trimInsertionCache(s.unreachableOrigins, &s.unreachableOrder)
+}
+
+// clearOriginUnreachable forgets a URL that has just answered, so a recovered
+// origin is never held down by a stale entry.
+func (s *Server) clearOriginUnreachable(cdnURL string) {
+	key := unreachableOriginKey(cdnURL)
+	s.unreachableMu.Lock()
+	defer s.unreachableMu.Unlock()
+	delete(s.unreachableOrigins, key)
+}
+
+func (s *Server) unreachableTTL() time.Duration {
+	if s == nil || s.cfg == nil {
+		return 0
+	}
+	return s.cfg.Cache.UnreachableOriginTTL
+}
+
 // passthroughWouldReuseURL reports whether the legacy passthrough path would
 // re-request probedURL rather than a fresher one. It deliberately mirrors the
 // passthrough's own "capability probing may have reresolved to a fresh node"
@@ -483,6 +559,17 @@ func (s *Server) SweepCaches() int {
 		}
 	}
 	s.lastPlayedMu.Unlock()
+
+	if ttl := s.unreachableTTL(); ttl > 0 {
+		s.unreachableMu.Lock()
+		for key, at := range s.unreachableOrigins {
+			if now.Sub(at) > ttl {
+				delete(s.unreachableOrigins, key)
+				removed++
+			}
+		}
+		s.unreachableMu.Unlock()
+	}
 
 	return removed
 }

@@ -867,6 +867,16 @@ func (s *Server) streamViaCache(w http.ResponseWriter, r *http.Request, item *st
 		total = cachedTotal
 		contentType = cachedContentType
 	} else {
+		// PERF-4: this exact URL was unreachable moments ago and nothing has
+		// re-resolved it since (a repair or re-resolve produces a different
+		// URL, and therefore a different key). Re-dialling it buys the same
+		// 503 for another full connect timeout, once per range request.
+		if s.originRecentlyUnreachable(cdnURL) {
+			s.log.Info("stream: origin unreachable within ttl, failing fast",
+				"item_id", itemID, "file_id", fileID)
+			http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
+			return true
+		}
 		var ranged bool
 		var err error
 		src, total, contentType, ranged, err = initCDNSource(ctx, cdnURL, windowBytes, reresolve)
@@ -913,11 +923,16 @@ func (s *Server) streamViaCache(w http.ResponseWriter, r *http.Request, item *st
 				// sooner. Returning true means "the response is written",
 				// not "the stream succeeded"; the caller's egress meter is
 				// already guarded on bytes actually written.
+				s.noteOriginUnreachable(cdnURL)
 				http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
 				return true
 			}
 			return false
 		}
+		// The origin answered, so forget any stale unreachable entry for it
+		// (only reachable via an expired TTL, but cheap insurance that a
+		// recovered origin is never held down by history).
+		s.clearOriginUnreachable(cdnURL)
 		capable := ranged
 		cacheTotal := total
 		if cacheTotal <= 0 {

@@ -625,6 +625,19 @@ type Config struct {
 		TailEvict bool
 		// TailLookback is the number of segments to keep behind current write position.
 		TailLookback int
+		// UnreachableOriginTTL is how long a stream origin that could not be
+		// reached at all (PERF-4's connect-level class: DNS failure, refusal,
+		// unreachable host, dial/TLS-handshake timeout) is replayed as an
+		// immediate 503 instead of paying the connect timeout again. The
+		// playback analogue of Relay.NegativeTTLMin, but far shorter, and
+		// keyed on the failed URL rather than the item: a repair or
+		// re-resolve yields a different URL and is therefore never suppressed
+		// by this. 0 disables. Default 5 minutes.
+		//
+		// It is short deliberately. A connect-level failure is usually a dead
+		// provider link but can be a transient network fault, and only the
+		// TTL bounds how long a recovered origin stays wrongly suppressed.
+		UnreachableOriginTTL time.Duration
 		// DiskCacheSizeMB is the max disk cache size in MB (disk/full modes).
 		DiskCacheSizeMB int64
 		// DiskCacheTTLMin is minutes before a disk-cached segment is evicted (disk mode).
@@ -935,6 +948,7 @@ func defaultConfig() Config {
 	cfg.Cache.TailLookback = 4
 	cfg.Cache.DiskCacheSizeMB = 2048
 	cfg.Cache.DiskCacheTTLMin = 60
+	cfg.Cache.UnreachableOriginTTL = 5 * time.Minute
 	cfg.Cache.FullEvictMode = "ttl"
 	cfg.Cache.FullEvictTTLMin = 120
 	cfg.Cache.StreamChunkSizeMB = 16
@@ -1416,6 +1430,11 @@ func applyEnv(cfg *Config) {
 	if v := strings.TrimSpace(os.Getenv("HARRBOR_RELAY_MAX_BODY_BYTES")); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
 			cfg.Relay.MaxBodyBytes = n
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("HARRBOR_STREAM_UNREACHABLE_TTL_SEC")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.Cache.UnreachableOriginTTL = time.Duration(n) * time.Second
 		}
 	}
 	if v := strings.TrimSpace(os.Getenv("HARRBOR_RELAY_NEGATIVE_TTL_MIN")); v != "" {
