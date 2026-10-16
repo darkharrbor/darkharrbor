@@ -182,9 +182,11 @@ func TestSearchTorrentAvailabilityFreshLiveAnswerOverridesLearned(t *testing.T) 
 
 func TestSearchTorrentAvailabilityBoundsLiveRefreshAndWorkers(t *testing.T) {
 	results := make(map[string]bool)
-	hashes := make([]string, 0, 12)
-	for i := 1; i <= 12; i++ {
-		hash := strings.Repeat(strconv.FormatInt(int64(i%10), 10), 40)
+	n := searchAvailabilityLiveTop + 4 // exceed the live cap so the bound is exercised
+	hashes := make([]string, 0, n)
+	for i := 1; i <= n; i++ {
+		h := strconv.FormatInt(int64(i), 16)
+		hash := strings.Repeat("0", 40-len(h)) + h
 		hashes = append(hashes, hash)
 		results[hash] = true
 	}

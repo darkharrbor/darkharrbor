@@ -16,9 +16,9 @@ import (
 const (
 	searchAvailabilityMaxCandidates = 200
 	searchAvailabilityMaxProviders  = 8
-	searchAvailabilityLiveTop       = 8
-	searchAvailabilityWorkers       = 4
-	searchAvailabilityTimeout       = 5 * time.Second
+	searchAvailabilityLiveTop       = 150
+	searchAvailabilityWorkers       = 8
+	searchAvailabilityTimeout       = 10 * time.Second
 )
 
 type searchAvailabilityVerdict uint8
