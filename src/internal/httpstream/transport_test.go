@@ -14,7 +14,7 @@ func TestNewHTTPClientBudgets(t *testing.T) {
 	if metadata.Timeout != metadataRequestTimeout {
 		t.Fatalf("metadata timeout = %s, want %s", metadata.Timeout, metadataRequestTimeout)
 	}
-	metadataTransport, ok := metadata.Transport.(*http.Transport)
+	metadataTransport, ok := baseTransport(metadata.Transport).(*http.Transport)
 	if !ok {
 		t.Fatalf("metadata transport type = %T", metadata.Transport)
 	}
@@ -26,7 +26,7 @@ func TestNewHTTPClientBudgets(t *testing.T) {
 	if aggregate.Timeout != aggregateMetadataRequestTimeout {
 		t.Fatalf("aggregate metadata timeout = %s, want %s", aggregate.Timeout, aggregateMetadataRequestTimeout)
 	}
-	aggregateTransport, ok := aggregate.Transport.(*http.Transport)
+	aggregateTransport, ok := baseTransport(aggregate.Transport).(*http.Transport)
 	if !ok {
 		t.Fatalf("aggregate metadata transport type = %T", aggregate.Transport)
 	}
@@ -43,7 +43,7 @@ func TestNewHTTPClientBudgets(t *testing.T) {
 	if stream.Timeout != 0 {
 		t.Fatalf("stream timeout = %s, want no whole-request deadline", stream.Timeout)
 	}
-	streamTransport, ok := stream.Transport.(*http.Transport)
+	streamTransport, ok := baseTransport(stream.Transport).(*http.Transport)
 	if !ok {
 		t.Fatalf("stream transport type = %T", stream.Transport)
 	}
@@ -93,4 +93,12 @@ func TestBackendHTTPClientRedirectApprovalIsExplicitAndHeaderSafe(t *testing.T) 
 	if !reached.Load() {
 		t.Fatal("approved backend redirect did not reach its target")
 	}
+}
+
+// baseTransport unwraps the User-Agent wrapper NewHTTPClient installs.
+func baseTransport(rt http.RoundTripper) http.RoundTripper {
+	if ua, ok := rt.(*userAgentTransport); ok {
+		return ua.base
+	}
+	return rt
 }

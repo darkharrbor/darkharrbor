@@ -77,7 +77,41 @@ func NewHTTPClient(policy *SecurityPolicy, trust Trust, role TransportRole, allo
 		client.Timeout = metadataRequestTimeout
 	}
 
+	// Go's default "Go-http-client/x" User-Agent is rejected outright by some
+	// public addon origins (torrentio.strem.fun answers 403 to it while
+	// redirecting any other UA to the debrid CDN), which silently killed every
+	// MediaFlow-relayed Torrentio stream. Every request leaving this client
+	// therefore carries an explicit UA unless the caller already set one
+	// (e.g. a ticket's forwarded request headers). Redirect hops are built by
+	// net/http from the original request's headers, so they inherit it too.
+	client.Transport = &userAgentTransport{base: client.Transport}
+
 	return client
+}
+
+// DefaultUserAgent is sent on outbound HTTP-stream requests that do not
+// specify their own User-Agent.
+const DefaultUserAgent = "DarkHarrbor/1.0 (+https://github.com/darkharrbor/darkharrbor)"
+
+type userAgentTransport struct {
+	base http.RoundTripper
+}
+
+func (t *userAgentTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Header.Get("User-Agent") != "" {
+		return t.base.RoundTrip(req)
+	}
+	clone := req.Clone(req.Context())
+	clone.Header.Set("User-Agent", DefaultUserAgent)
+	return t.base.RoundTrip(clone)
+}
+
+// CloseIdleConnections lets http.Client.CloseIdleConnections reach the
+// pooled transport underneath the User-Agent wrapper.
+func (t *userAgentTransport) CloseIdleConnections() {
+	if ci, ok := t.base.(interface{ CloseIdleConnections() }); ok {
+		ci.CloseIdleConnections()
+	}
 }
 
 type idleReadConn struct {

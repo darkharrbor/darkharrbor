@@ -263,11 +263,17 @@ func (s *Server) handleMediaFlowStream(w http.ResponseWriter, r *http.Request) {
 	}
 	ticket, err := openMediaFlowTicket(s.cfg.Server.StreamSecret, r.URL.Query().Get("d"))
 	if err != nil {
+		if s.log != nil {
+			s.log.Warn("mediaflow stream rejected", "stage", "open_ticket", "error", httpstream.Sanitize(err))
+		}
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
 	selfOrigin, err := s.unwrapMediaFlowSelfOrigin(&ticket)
 	if err != nil {
+		if s.log != nil {
+			s.log.Warn("mediaflow stream rejected", "stage", "self_origin", "error", httpstream.Sanitize(err))
+		}
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
@@ -320,6 +326,24 @@ func (s *Server) handleMediaFlowStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp, err := s.httpStreamClient().Do(upstream)
+	// First-touch resolve race: a debrid-resolving addon (e.g. Torrentio's
+	// /resolve/torbox) can answer 400/5xx while the debrid is still adding the
+	// item and succeed seconds later. Nothing has been written to the client
+	// yet, so retry once after a short pause instead of relaying a transient
+	// failure the player would surface as a dead source. Owned AIO routes are
+	// excluded: they already re-resolve through the canonical fallback.
+	if err == nil && !ownedRoute && mediaFlowTransientUpstreamStatus(resp.StatusCode) {
+		_ = resp.Body.Close()
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(mediaFlowTransientRetryDelay):
+		}
+		if retry, rerr := http.NewRequestWithContext(r.Context(), r.Method, ticket.DestinationURL, nil); rerr == nil {
+			retry.Header = upstream.Header.Clone()
+			resp, err = s.httpStreamClient().Do(retry)
+		}
+	}
 	if err != nil {
 		if ownedRoute && r.Context().Err() == nil && s.serveMediaFlowCanonicalFallback(w, r, ticket, requested) {
 			return
@@ -343,6 +367,13 @@ func (s *Server) handleMediaFlowStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 400 && s.log != nil {
+		s.log.Warn("mediaflow upstream returned error status",
+			"destination", mediaFlowDestinationHost(ticket.DestinationURL),
+			"destination_path", mediaFlowDestinationPathShape(ticket.DestinationURL),
+			"status", resp.StatusCode,
+			"owned_route", ownedRoute)
+	}
 	if resp.StatusCode == http.StatusPartialContent {
 		if err := validateMediaFlowContentRange(resp.Header.Get("Content-Range"), resp.Header.Get("Content-Length"), requested); err != nil {
 			if ownedRoute && s.serveMediaFlowCanonicalFallback(w, r, ticket, requested) {
@@ -942,4 +973,33 @@ func copyMediaFlowResponseHeaders(dst, src http.Header) {
 			dst.Set(name, value)
 		}
 	}
+}
+
+
+// mediaFlowDestinationPathShape returns the first two path segments of a
+// destination URL for diagnostics, never the query (which may carry signed
+// material) nor deeper segments (which may carry tokens).
+func mediaFlowDestinationPathShape(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) > 2 {
+		parts = parts[:2]
+	}
+	return "/" + strings.Join(parts, "/")
+}
+
+// mediaFlowTransientRetryDelay is the pause before the single retry of a
+// transient upstream status (first-touch debrid resolve race).
+var mediaFlowTransientRetryDelay = 3 * time.Second
+
+func mediaFlowTransientUpstreamStatus(code int) bool {
+	switch code {
+	case http.StatusBadRequest, http.StatusTooManyRequests, http.StatusBadGateway,
+		http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	}
+	return false
 }
