@@ -43,6 +43,59 @@ type Dispatcher struct {
 	now       func() time.Time
 	cursorMu  sync.Mutex
 	after     string
+	// backoff holds per-representation retry delays after a failed entry,
+	// guarded by cursorMu. A deterministic failure (e.g. a committed source
+	// .strm that no longer exists) previously retried on every 30 s cycle
+	// forever; it now backs off exponentially up to maxEntryBackoff.
+	backoff map[string]entryBackoff
+}
+
+type entryBackoff struct {
+	fails int
+	next  time.Time
+}
+
+const (
+	minEntryBackoff = 30 * time.Second
+	maxEntryBackoff = time.Hour
+)
+
+func entryBackoffDelay(fails int) time.Duration {
+	d := minEntryBackoff
+	for i := 1; i < fails && d < maxEntryBackoff; i++ {
+		d *= 2
+	}
+	if d > maxEntryBackoff {
+		d = maxEntryBackoff
+	}
+	return d
+}
+
+// deferred reports whether representationID is still inside its backoff.
+func (d *Dispatcher) deferred(representationID string, now time.Time) bool {
+	d.cursorMu.Lock()
+	defer d.cursorMu.Unlock()
+	b, ok := d.backoff[representationID]
+	return ok && now.Before(b.next)
+}
+
+func (d *Dispatcher) noteFailure(representationID string, now time.Time) entryBackoff {
+	d.cursorMu.Lock()
+	defer d.cursorMu.Unlock()
+	if d.backoff == nil {
+		d.backoff = make(map[string]entryBackoff)
+	}
+	b := d.backoff[representationID]
+	b.fails++
+	b.next = now.Add(entryBackoffDelay(b.fails))
+	d.backoff[representationID] = b
+	return b
+}
+
+func (d *Dispatcher) clearBackoff(representationID string) {
+	d.cursorMu.Lock()
+	delete(d.backoff, representationID)
+	d.cursorMu.Unlock()
 }
 
 type Result struct {
@@ -65,11 +118,25 @@ func (d *Dispatcher) recordError(result *Result, representationID, stage string,
 	if err == nil {
 		err = errors.New("reactivedispatch: unspecified entry failure")
 	}
+	if errors.Is(err, reactivecommit.ErrCommitInProgress) {
+		// Contention with a concurrent commit of the same representation
+		// (or an orphan Commit will reclaim once stale): retried next cycle,
+		// not an error.
+		result.Errors--
+		if d.log != nil {
+			d.log.Debug("reactive automatic dispatch entry deferred: commit in progress",
+				"representation_id", representationID, "stage", stage)
+		}
+		return
+	}
+	b := d.noteFailure(representationID, d.now())
 	if d.log != nil {
 		d.log.Error("reactive automatic dispatch entry failed",
 			"representation_id", representationID,
 			"stage", stage,
-			"error", err)
+			"error", err,
+			"consecutive_failures", b.fails,
+			"next_attempt_in", b.next.Sub(d.now()).Round(time.Second).String())
 	}
 }
 
@@ -132,6 +199,9 @@ func (d *Dispatcher) Process(ctx context.Context) (Result, error) {
 			return result, err
 		}
 		if entry.Reason != "supervised_review" {
+			continue
+		}
+		if d.deferred(entry.RepresentationID, d.now()) {
 			continue
 		}
 		result.Examined++
@@ -237,6 +307,7 @@ func (d *Dispatcher) Process(ctx context.Context) (Result, error) {
 				d.recordError(&result, entry.RepresentationID, "resolve_pending", err)
 			} else {
 				result.Committed++
+				d.clearBackoff(entry.RepresentationID)
 			}
 		case "parked", "pending":
 			result.Parked++

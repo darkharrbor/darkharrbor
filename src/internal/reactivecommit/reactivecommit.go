@@ -98,6 +98,18 @@ type Result struct {
 	Reason         string
 }
 
+// ErrCommitInProgress reports that another caller holds the representation's
+// commit right now. It is a normal, transient contention outcome, not a fault.
+var ErrCommitInProgress = errors.New("reactivecommit: commit already in progress")
+
+// StaleCommitAfter is how long a 'committing' row may sit untouched before
+// Commit treats it as orphaned (its owner crashed or was restarted mid-commit)
+// and reclaims it. A live commit is a handful of arr API calls bounded by
+// their own timeouts, so this is far above any legitimate duration. Before
+// this, one orphan row from a restart was re-dispatched and logged as an
+// ERROR every 30 s forever (60 lines in 30 min measured on 2026-10-17).
+const StaleCommitAfter = 15 * time.Minute
+
 func (s *Service) Commit(ctx context.Context, req Request) (result Result, retErr error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
@@ -119,8 +131,20 @@ func (s *Service) Commit(ctx context.Context, req Request) (result Result, retEr
 	if record.State == "committed" || record.State == "parked" {
 		return Result{State: record.State, ReviewRequired: record.ReviewRequired, Reason: record.Reason}, nil
 	}
+	if !created && record.State == "committing" && !record.UpdatedAt.IsZero() && s.now().UTC().Sub(record.UpdatedAt) > StaleCommitAfter {
+		if err := s.repo.AbortReactiveCommit(ctx, proposal.RepresentationID); err != nil {
+			return Result{}, err
+		}
+		record, created, err = s.repo.BeginReactiveCommit(ctx, proposal.RepresentationID, proposal.ItemID, proposal.FileID, req.Mode, s.now().UTC())
+		if err != nil {
+			return Result{}, err
+		}
+		if record.State == "committed" || record.State == "parked" {
+			return Result{State: record.State, ReviewRequired: record.ReviewRequired, Reason: record.Reason}, nil
+		}
+	}
 	if !created {
-		return Result{}, errors.New("reactivecommit: commit already in progress")
+		return Result{}, ErrCommitInProgress
 	}
 	defer func() {
 		if retErr == nil {
