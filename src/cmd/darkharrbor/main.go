@@ -2257,14 +2257,24 @@ func submitViaLane(
 // restart (measured 2026-10-17 on a restart during a TorBox incident).
 var planDiscoveryBackoff = []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second, 18 * time.Second, 30 * time.Second}
 
-// discoverTorBoxPlan calls getUserInfo with a 10 s timeout per attempt,
-// retrying only errors marked retryable.
+// planDiscoveryAttemptTimeout bounds one GetUserInfo call. It covers the
+// client's own 429 hold: the TorBox policy limiter makes a query wait out a
+// Retry-After, and with the earlier 10 s bound the attempt timed out behind
+// such a hold and was not retried (measured 2026-10-17, test instance boot:
+// "rate limiter wait: torbox policy: hold wait (query): context deadline
+// exceeded" -> free-tier fallback).
+const planDiscoveryAttemptTimeout = 30 * time.Second
+
+// discoverTorBoxPlan calls getUserInfo with planDiscoveryAttemptTimeout per
+// attempt, retrying errors marked retryable and attempts that ran out their
+// own timeout while the parent context is still live.
 func discoverTorBoxPlan(ctx context.Context, log *slog.Logger, getUserInfo func(context.Context) (*torbox.UserInfo, error), backoff []time.Duration) (*torbox.UserInfo, error) {
 	for attempt := 0; ; attempt++ {
-		attemptCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		attemptCtx, cancel := context.WithTimeout(ctx, planDiscoveryAttemptTimeout)
 		info, err := getUserInfo(attemptCtx)
 		cancel()
-		if err == nil || !provider.IsRetryable(err) || attempt >= len(backoff) {
+		transient := provider.IsRetryable(err) || (errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil)
+		if err == nil || !transient || attempt >= len(backoff) {
 			return info, err
 		}
 		log.Warn("plan discovery: transient failure, retrying", "error", err, "attempt", attempt+1, "retry_in", backoff[attempt])
@@ -2631,9 +2641,21 @@ func resolveItem(
 
 	// The queued/remote id ladder moved verbatim into the TorBox adapter
 	// (Poll, internal/torbox/adapter.go).
-	status, err := prov.Poll(ctx, item)
+	// Bounded: the resolver handles items one at a time, and a TorBox 429
+	// hold made one Poll wait 3 min 40 s, stalling every other item --
+	// usenet ones included (measured 2026-10-17, test instance).
+	pollCtx, pollCancel := context.WithTimeout(ctx, resolverPollTimeout)
+	status, err := prov.Poll(pollCtx, item)
+	pollCancel()
 
 	if err != nil {
+		if transientProviderErr(ctx, err) {
+			// A provider incident is not a failed attempt on this item:
+			// counting it exhausted maxResolveAttempts in ~3 min of 429s.
+			log.Warn("resolver: get status deferred (provider busy or unreachable)", "item_id", item.ID, "error", err)
+			scheduleResolvePoll(ctx, log, st, item, time.Now, 30*time.Second)
+			return
+		}
 		log.Warn("resolver: get status failed", "item_id", item.ID, "error", err)
 		scheduleResolveRetry(ctx, log, st, item, 30*time.Second, err.Error())
 		return
@@ -3183,6 +3205,19 @@ func resolveItem(
 		pollDelay := downloadPollDelay(time.Since(item.CreatedAt))
 		scheduleResolvePoll(ctx, log, st, item, time.Now, pollDelay)
 	}
+}
+
+// resolverPollTimeout bounds one provider status poll in the resolve cycle.
+const resolverPollTimeout = 20 * time.Second
+
+// transientProviderErr reports a provider error worth waiting out: marked
+// retryable (429, 5xx, transport) or a call that ran out its own deadline
+// while the parent context is still live.
+func transientProviderErr(parent context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	return provider.IsRetryable(err) || (errors.Is(err, context.DeadlineExceeded) && parent.Err() == nil)
 }
 
 // scheduleResolvePoll schedules normal provider-state observation without
