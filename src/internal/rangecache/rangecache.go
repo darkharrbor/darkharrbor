@@ -1215,6 +1215,8 @@ func (c *Cache) promoteAndStoreLocked(key string, e diskEntry, pin bool) {
 // pinnedSizeB stays zero and this never has work to do).
 // Must be called with c.mu held.
 func (c *Cache) pinnedEvictLocked() {
+	var pinnedEvicted int
+	var pinnedFreed int64
 	budget := c.cfg.PinnedBudgetMB * 1024 * 1024
 	if budget <= 0 {
 		return
@@ -1256,7 +1258,12 @@ func (c *Cache) pinnedEvictLocked() {
 		if c.pinnedSizeB < 0 {
 			c.pinnedSizeB = 0
 		}
-		c.log.Info("rangecache: pinned tier evicted LRU", "key", oldestKey[:8], "freed_bytes", oldest.sizeB)
+		c.log.Debug("rangecache: pinned tier evicted LRU", "key", oldestKey[:8], "freed_bytes", oldest.sizeB)
+		pinnedEvicted++
+		pinnedFreed += oldest.sizeB
+	}
+	if pinnedEvicted > 0 {
+		c.log.Info("rangecache: pinned tier evicted LRU", "entries", pinnedEvicted, "freed_bytes", pinnedFreed, "pinned_bytes", c.pinnedSizeB)
 	}
 }
 
@@ -1528,6 +1535,8 @@ func readaheadPrefetchBackoff(consecutiveFails int) time.Duration {
 // low-water mark using sampled-LRU (oldest of K=16 random entries per round)
 // instead of a full O(n log n) sort of all entries.
 func (c *Cache) evictLRU() {
+	var evicted int
+	var freed int64
 	budget := c.cfg.DiskCacheSizeMB * 1024 * 1024
 	lowWater := budget * 95 / 100 // stop at 95% — avoid re-triggering on the next write
 
@@ -1565,7 +1574,12 @@ func (c *Cache) evictLRU() {
 		if c.diskSizeB < 0 {
 			c.diskSizeB = 0
 		}
-		c.log.Info("rangecache: evicted LRU", "key", oldestKey[:8], "freed_bytes", oldest.sizeB)
+		c.log.Debug("rangecache: evicted LRU", "key", oldestKey[:8], "freed_bytes", oldest.sizeB)
+		evicted++
+		freed += oldest.sizeB
+	}
+	if evicted > 0 {
+		c.log.Info("rangecache: evicted LRU", "entries", evicted, "freed_bytes", freed, "disk_bytes", c.diskSizeB)
 	}
 }
 

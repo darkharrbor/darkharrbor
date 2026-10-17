@@ -158,7 +158,7 @@ func (r *SegmentOffsetRecorder) run() {
 			r.stats.inserts += inserted
 			r.stats.transactions++
 			if r.log != nil {
-				r.log.Info("store: segment offsets flushed",
+				r.log.Debug("store: segment offsets flushed",
 					"rows", rows,
 					"inserted", inserted,
 					"transactions_total", r.stats.transactions)

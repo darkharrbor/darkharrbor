@@ -1974,7 +1974,7 @@ func (s *Server) handleSABHistory(w http.ResponseWriter, r *http.Request) {
 			failed++
 		}
 	}
-	s.log.Info("sab history: items exposed",
+	s.log.Debug("sab history: items exposed",
 		"event", "sab_failed_history_exposed",
 		"category", category,
 		"items", len(items),

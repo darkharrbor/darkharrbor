@@ -222,6 +222,14 @@ func (s *Server) eligibleTorrents(r *http.Request, torrents []prowlarr.Release, 
 	}
 	cands := make([]tc, 0, len(torrents))
 	seen := make(map[string]bool, len(torrents))
+	// Per-hash exclusions are DEBUG; one INFO line per search says how many.
+	blacklistedN := 0
+	defer func() {
+		if blacklistedN > 0 {
+			s.log.Info("selection: excluded blacklisted torrents",
+				"event", "torrent_selection_excluded", "count", blacklistedN)
+		}
+	}()
 	for _, rel := range torrents {
 		h := strings.ToLower(strings.TrimSpace(rel.InfoHash))
 		if h == "" {
@@ -241,7 +249,8 @@ func (s *Server) eligibleTorrents(r *http.Request, torrents []prowlarr.Release, 
 				"error", blErr,
 			)
 		} else if blacklisted {
-			s.log.Info("selection: excluded blacklisted torrent",
+			blacklistedN++
+			s.log.Debug("selection: excluded blacklisted torrent",
 				"event", "torrent_selection_excluded",
 				"source_type", store.SourceTypeTorrent,
 				"info_hash", identity,

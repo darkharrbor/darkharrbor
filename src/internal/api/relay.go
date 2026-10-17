@@ -120,7 +120,7 @@ func (s *Server) handleProbeRelay(w http.ResponseWriter, r *http.Request) {
 				s.log.Warn("relay: cache lookup failed (non-fatal, falling back to live probe)",
 					"item_id", itemID, "file_id", fileID, "error", err)
 			} else if found {
-				s.log.Info("relay: probe served from cache",
+				s.log.Debug("relay: probe served from cache",
 					"item_id", itemID, "file_id", fileID)
 				writeJSON(w, http.StatusOK, relayResponse{Stdout: cached, ExitCode: 0})
 				return
@@ -142,7 +142,7 @@ func (s *Server) handleProbeRelay(w http.ResponseWriter, r *http.Request) {
 						s.log.Warn("relay: content-cache promote failed (non-fatal)",
 							"item_id", itemID, "file_id", fileID, "error", perr)
 					}
-					s.log.Info("relay: probe served from content cache",
+					s.log.Debug("relay: probe served from content cache",
 						"item_id", itemID, "file_id", fileID, "info_hash", *item.InfoHash)
 					writeJSON(w, http.StatusOK, relayResponse{Stdout: cached, ExitCode: 0})
 					return
@@ -160,7 +160,7 @@ func (s *Server) handleProbeRelay(w http.ResponseWriter, r *http.Request) {
 			s.log.Warn("relay: negative cache lookup failed (non-fatal, falling back to live probe)",
 				"item_id", cacheItemID, "file_id", cacheFileID, "error", err)
 		} else if found {
-			s.log.Info("relay: probe failure served from negative cache",
+			s.log.Debug("relay: probe failure served from negative cache",
 				"item_id", cacheItemID, "file_id", cacheFileID, "exit_code", exitCode, "hits", hits)
 			writeJSON(w, http.StatusOK, relayResponse{Stdout: stdout, ExitCode: exitCode})
 			return

@@ -189,6 +189,7 @@ func (s *Server) handleMediaFlowGenerate(w http.ResponseWriter, r *http.Request)
 	// metadata_id, present only on aggregator-owned URLs, corroborates it.
 	batchIdentity, batchBound := s.rx95.Resolve(mediaFlowBatchMetadataID(req.URLs), s.nowUTC())
 	urls := make([]string, 0, len(req.URLs))
+	var shapeOwned, shapeBound, shapePassthrough int
 	for _, candidate := range req.URLs {
 		if candidate.Endpoint != "" && candidate.Endpoint != "/proxy/stream" {
 			// Same per-slot degradation as an unproxyable destination below:
@@ -226,7 +227,12 @@ func (s *Server) handleMediaFlowGenerate(w http.ResponseWriter, r *http.Request)
 		// shapes. Emit only the NON-SECRET shape needed to establish a real
 		// correlation key -- never the destination URL itself, which carries
 		// the aggregator's encrypted store auth, and never the ticket.
-		s.logMediaFlowGenerateShape(candidate, representationID != "")
+		if s.logMediaFlowGenerateShape(candidate, representationID != "") {
+			shapeOwned++
+		}
+		if representationID != "" {
+			shapeBound++
+		}
 		if representationID == "" {
 			var err error
 			representationID, err = newMediaFlowRepresentationID()
@@ -264,6 +270,7 @@ func (s *Server) handleMediaFlowGenerate(w http.ResponseWriter, r *http.Request)
 					"error", httpstream.Sanitize(err))
 			}
 			urls = append(urls, candidate.DestinationURL)
+			shapePassthrough++
 			continue
 		}
 		sealed, err := sealMediaFlowTicket(s.cfg.Server.StreamSecret, ticket)
@@ -276,6 +283,18 @@ func (s *Server) handleMediaFlowGenerate(w http.ResponseWriter, r *http.Request)
 		q.Set("d", sealed)
 		u.RawQuery = q.Encode()
 		urls = append(urls, u.String())
+	}
+	// One summary line per batch; the per-candidate shape is DEBUG. A single
+	// AIOStreams lookup sends hundreds of candidates, and logging each at
+	// INFO was the largest source of log volume (1,737 of 5,150 lines in
+	// the first 16 minutes after a restart on 2026-10-17).
+	if s.log != nil {
+		s.log.Info("mediaflow generate: batch",
+			"urls", len(req.URLs),
+			"batch_bound", batchBound,
+			"identity_bound", shapeBound,
+			"owned_prefix", shapeOwned,
+			"passthrough", shapePassthrough)
 	}
 	writeJSON(w, http.StatusOK, mediaFlowGenerateResponse{URLs: urls})
 }
@@ -555,9 +574,12 @@ func (s *Server) handleMediaFlowStream(w http.ResponseWriter, r *http.Request) {
 // metadataId segment, which AIOStreams computes as a hash of its own metadata
 // object and which is therefore not a secret. The correlation key for RX-9.5
 // must be derived from THIS, not from an assumed URL shape.
-func (s *Server) logMediaFlowGenerateShape(candidate mediaFlowURLRequest, identityParsed bool) {
+//
+// It logs at DEBUG and reports whether the candidate carried the aggregator's
+// owned playback prefix, for the per-batch INFO summary.
+func (s *Server) logMediaFlowGenerateShape(candidate mediaFlowURLRequest, identityParsed bool) bool {
 	if s == nil || s.log == nil {
-		return
+		return false
 	}
 	host, segCount, metadataID, ownedPrefix := "", 0, "", false
 	if u, err := httpstream.ValidateURL(candidate.DestinationURL); err == nil {
@@ -572,7 +594,7 @@ func (s *Server) logMediaFlowGenerateShape(candidate mediaFlowURLRequest, identi
 			}
 		}
 	}
-	s.log.Info("rx95: generate_urls shape",
+	s.log.Debug("rx95: generate_urls shape",
 		"dest_host", host,
 		"owned_prefix", ownedPrefix,
 		"path_segments", segCount,
@@ -581,6 +603,7 @@ func (s *Server) logMediaFlowGenerateShape(candidate mediaFlowURLRequest, identi
 		"identity_parsed", identityParsed,
 		"request_header_keys", len(candidate.RequestHeaders),
 		"query_param_keys", len(candidate.QueryParams))
+	return ownedPrefix
 }
 
 func newMediaFlowRepresentationID() (string, error) {
