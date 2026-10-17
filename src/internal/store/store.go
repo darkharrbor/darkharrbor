@@ -298,6 +298,16 @@ func (s *Store) UpdateItemState(ctx context.Context, item *Item, next ItemState,
 		return fmt.Errorf("state transition conflict: item %s is already terminal in state %q", item.ID, prev)
 	}
 
+	// A failed item must say why. Many failure paths pass the reason only
+	// as message; without this the row (and the arr's history view) showed
+	// a failure with an empty error. An explicit ErrorMessage still wins,
+	// except a "waiting: " deferral note, which the failure supersedes.
+	if next == StateFailed && strings.TrimSpace(message) != "" &&
+		(item.ErrorMessage == nil || strings.TrimSpace(*item.ErrorMessage) == "" || strings.HasPrefix(*item.ErrorMessage, "waiting: ")) {
+		m := message
+		item.ErrorMessage = &m
+	}
+
 	metaJSON, err := json.Marshal(item.Metadata)
 	if err != nil {
 		return fmt.Errorf("marshal metadata: %w", err)
