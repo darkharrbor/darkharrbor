@@ -39,7 +39,7 @@ func TestSegmentByteSource_Conformance(t *testing.T) {
 func TestSegmentStarts_DeclaredFallback(t *testing.T) {
 	sc := &SegmentCache{} // offsets nil → declared cumulative fallback
 	declared := []int64{100, 250, 700}
-	got := sc.segmentStarts(context.Background(), "", "", 0, declared)
+	got := sc.segmentStarts(context.Background(), "", "", 0, declared, nil)
 	want := []int64{0, 100, 350, 1050}
 	if len(got) != len(want) {
 		t.Fatalf("starts len=%d want %d", len(got), len(want))

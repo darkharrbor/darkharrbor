@@ -812,7 +812,7 @@ func (p *NNTPProvider) PrewarmZIPSource(ctx context.Context, itemID, contentKey 
 	for i, segment := range entry.Segments {
 		declared[i] = segment.Bytes
 	}
-	starts := p.cache.segmentStarts(ctx, itemID, offsetKey, entry.NZBFileIdx, declared)
+	starts := p.cache.segmentStarts(ctx, itemID, offsetKey, entry.NZBFileIdx, declared, nil)
 	start := 0
 	for start+1 < len(starts) && starts[start+1] <= entry.DataOff {
 		start++
@@ -890,7 +890,7 @@ func (p *NNTPProvider) SeekZIPSource(ctx context.Context, itemID, contentKey, ma
 	for i, segment := range entry.Segments {
 		declared[i] = segment.Bytes
 	}
-	starts := p.cache.segmentStarts(ctx, itemID, offsetKey, entry.NZBFileIdx, declared)
+	starts := p.cache.segmentStarts(ctx, itemID, offsetKey, entry.NZBFileIdx, declared, nil)
 	entryEnd := entry.DataOff + entry.CompressedSize
 	if entryEnd < entry.DataOff {
 		return nil

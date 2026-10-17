@@ -103,6 +103,13 @@ func validateSevenZipManifest(manifest SevenZipManifest) error {
 	return nil
 }
 
+// ErrNoSevenZipVolumes and ErrAmbiguousSevenZipVolumes are layout failures
+// determined by the NZB itself: retrying cannot change them.
+var (
+	ErrNoSevenZipVolumes        = errors.New("7z: no volume files found")
+	ErrAmbiguousSevenZipVolumes = errors.New("7z: no unique contiguous volume set")
+)
+
 // BuildSevenZipManifest parses a Copy-coded 7z archive through the existing
 // cancellable NNTP ByteSource ladder. Split .7z.001 volumes are composed by raw
 // concatenation, which is the 7z volume format.
@@ -122,7 +129,7 @@ func (p *NNTPProvider) BuildSevenZipManifest(ctx context.Context, nzb NZB) (Seve
 		candidates = append(candidates, candidate{file: file, index: i, stem: stem, part: part})
 	}
 	if len(candidates) == 0 {
-		return SevenZipManifest{}, 0, errors.New("7z: no volume files found")
+		return SevenZipManifest{}, 0, ErrNoSevenZipVolumes
 	}
 	groups := make(map[string][]candidate)
 	for _, candidate := range candidates {
@@ -164,20 +171,43 @@ func (p *NNTPProvider) BuildSevenZipManifest(ctx context.Context, nzb NZB) (Seve
 		}
 	}
 	if len(selected) == 0 || ambiguous {
-		return SevenZipManifest{}, 0, errors.New("7z: no unique contiguous volume set")
+		return SevenZipManifest{}, 0, ErrAmbiguousSevenZipVolumes
 	}
 	candidates = selected
 
 	manifest := SevenZipManifest{Volumes: make([]SevenZipVolume, len(candidates))}
 	sources := make([]bytesource.ByteSource, len(candidates))
 	starts := make([]int64, len(candidates)+1)
+	// NZB-declared segment bytes are encoded article sizes (~3% above the
+	// decoded payload), so addressing the archive in declared coordinates
+	// put the 7z next header (at the archive's end) at the wrong offset and
+	// every split release failed with "next header CRC mismatch". Derive
+	// exact decoded geometry from the yEnc headers of the first segment of
+	// the first and last volume (see decodedVolumeGeometry).
+	if p.log != nil {
+		layout := make([]string, 0, len(candidates))
+		for _, c := range candidates {
+			layout = append(layout, fmt.Sprintf("%d:%d", c.part, len(c.file.Segments)))
+		}
+		p.log.Debug("7z: selected volumes", "count", len(candidates), "part_segments", strings.Join(layout, ","))
+	}
+	files := make([]NZBFile, len(candidates))
 	for i, candidate := range candidates {
-		source, err := p.archiveByteSource(ctx, candidate.index, candidate.file.Segments)
+		files[i] = candidate.file
+	}
+	geoms := p.sevenZipVolumeGeometry(ctx, files)
+	for i, candidate := range candidates {
+		geom := geoms[i]
+		source, err := p.archiveByteSourceGeometry(ctx, candidate.index, candidate.file.Segments, geom)
 		if err != nil {
 			return SevenZipManifest{}, 0, fmt.Errorf("7z: volume %d byte source: %w", i+1, err)
 		}
 		sources[i] = source
-		starts[i+1] = starts[i] + candidate.file.TotalBytes
+		volSize := candidate.file.TotalBytes
+		if geom.ok() {
+			volSize = geom.total
+		}
+		starts[i+1] = starts[i] + volSize
 		manifest.Volumes[i] = SevenZipVolume{
 			Number: i + 1, NZBFileIdx: candidate.index, Size: candidate.file.TotalBytes,
 			CumOffset: starts[i], Segments: candidate.file.Segments,
@@ -447,4 +477,100 @@ func (s *sevenZipConcatSource) ReadAt(ctx context.Context, p []byte, off int64) 
 		return n, io.EOF
 	}
 	return n, nil
+}
+
+// volumeGeometry is the exact decoded layout of one NZB file posted with a
+// fixed yEnc part size: every segment decodes to part bytes except the last.
+type volumeGeometry struct {
+	part, total int64
+	segments    int
+}
+
+func (g volumeGeometry) ok() bool {
+	if g.part <= 0 || g.total <= 0 || g.segments <= 0 {
+		return false
+	}
+	last := g.total - g.part*int64(g.segments-1)
+	return last > 0 && last <= g.part
+}
+
+// starts returns the cumulative decoded offset table (len segments+1).
+func (g volumeGeometry) starts() []int64 {
+	out := make([]int64, g.segments+1)
+	for i := 1; i < g.segments; i++ {
+		out[i] = int64(i) * g.part
+	}
+	out[g.segments] = g.total
+	return out
+}
+
+// sevenZipVolumeGeometry returns an exact decoded geometry per volume, or a
+// zero geometry (declared-size addressing) where it could not be derived.
+// Split 7z volumes share a size except the last, but posters vary the first
+// (seen live: 150 MiB first, 200 MiB middle), so one volume per distinct
+// segment count is probed and reused for the others; the last is probed on
+// its own. Each probe is one article fetch.
+func (p *NNTPProvider) sevenZipVolumeGeometry(ctx context.Context, files []NZBFile) []volumeGeometry {
+	out := make([]volumeGeometry, len(files))
+	bySegments := map[int]volumeGeometry{}
+	for i, file := range files {
+		n := len(file.Segments)
+		if i < len(files)-1 {
+			if g, seen := bySegments[n]; seen {
+				out[i] = g
+				continue
+			}
+		}
+		g := p.probeVolumeGeometry(ctx, file)
+		out[i] = g
+		if i < len(files)-1 {
+			bySegments[n] = g
+		}
+	}
+	return out
+}
+
+// probeVolumeGeometry fetches a file's first segment and reads its decoded
+// length (the part size) and the =ybegin size= file total. Any failure or
+// inconsistency yields a zero geometry, i.e. declared-size addressing.
+func (p *NNTPProvider) probeVolumeGeometry(ctx context.Context, file NZBFile) volumeGeometry {
+	if p.pool == nil || len(file.Segments) == 0 {
+		return volumeGeometry{}
+	}
+	seg := file.Segments[0]
+	var g volumeGeometry
+	err := fetchArticleFromPoolTotal(ctx, p.pool, p.log, "7z-geometry", seg.Number, seg.MessageID, !p.skipCRC,
+		func(data []byte, total int64) error {
+			g = volumeGeometry{part: int64(len(data)), total: total, segments: len(file.Segments)}
+			return nil
+		})
+	if p.log != nil {
+		p.log.Debug("7z: volume geometry probe", "segments", len(file.Segments), "part", g.part, "total", g.total, "declared_total", file.TotalBytes, "ok", err == nil && g.ok(), "error", err)
+	}
+	if err != nil || !g.ok() {
+		return volumeGeometry{}
+	}
+	return g
+}
+
+// archiveByteSourceGeometry is archiveByteSource with an exact decoded offset
+// table when geom is valid; recorded offsets still take precedence in the
+// cache path, and an invalid geom keeps the declared-size fallback.
+func (p *NNTPProvider) archiveByteSourceGeometry(ctx context.Context, fileIndex int, segments []NZBSegment, geom volumeGeometry) (bytesource.ByteSource, error) {
+	if !geom.ok() || geom.segments != len(segments) {
+		return p.archiveByteSource(ctx, fileIndex, segments)
+	}
+	itemID := accountingItemID(ctx)
+	fileKey := "nntp-archive"
+	if itemID != "" {
+		fileKey += "|" + itemID
+	}
+	if p.cache != nil {
+		return p.cache.segmentByteSourceStarts(ctx, fileKey, itemID, "", fileIndex, segments, "build", geom.starts())
+	}
+	fetch := func(fetchCtx context.Context, chunk bytesource.Chunk) ([]byte, error) {
+		segment := segments[chunk.Index]
+		return fetchArticleBytesWithRetryAt(fetchCtx, p.pool, p.log, "build", segment.Number, segment.MessageID, segment.PostedAt, !p.skipCRC)
+	}
+	return newSegmentByteSource(fileKey, segments, geom.starts(), fetch)
 }

@@ -29,6 +29,12 @@ func (sc *SegmentCache) SegmentByteSource(ctx context.Context, fileKey, itemID, 
 }
 
 func (sc *SegmentCache) segmentByteSource(ctx context.Context, fileKey, itemID, contentKey string, fileIndex int, segments []NZBSegment, op string) (bytesource.ByteSource, error) {
+	return sc.segmentByteSourceStarts(ctx, fileKey, itemID, contentKey, fileIndex, segments, op, nil)
+}
+
+// segmentByteSourceStarts is segmentByteSource with a caller-supplied decoded
+// offset table used when no recorded offsets exist (nil: declared sizes).
+func (sc *SegmentCache) segmentByteSourceStarts(ctx context.Context, fileKey, itemID, contentKey string, fileIndex int, segments []NZBSegment, op string, fallbackStarts []int64) (bytesource.ByteSource, error) {
 	contentKey = SegmentOffsetKey(contentKey, segments)
 	cs := &nntpChunkSource{
 		sc:         sc,
@@ -46,7 +52,7 @@ func (sc *SegmentCache) segmentByteSource(ctx context.Context, fileKey, itemID, 
 	for i, seg := range segments {
 		declared[i] = seg.Bytes
 	}
-	starts := sc.segmentStarts(ctx, itemID, contentKey, fileIndex, declared)
+	starts := sc.segmentStarts(ctx, itemID, contentKey, fileIndex, declared, fallbackStarts)
 	return newSegmentByteSource(fileKey, segments, starts, fetch)
 }
 
@@ -81,11 +87,14 @@ func (p *NNTPProvider) segmentFileByteSource(ctx context.Context, fileIndex int,
 // segmentStarts returns the cumulative byte-offset table (len = nSeg+1),
 // preferring recorded decoded offsets and falling back to declared cumulative
 // sizes when none are recorded.
-func (sc *SegmentCache) segmentStarts(ctx context.Context, itemID, contentKey string, fileIndex int, declared []int64) []int64 {
+func (sc *SegmentCache) segmentStarts(ctx context.Context, itemID, contentKey string, fileIndex int, declared []int64, fallback []int64) []int64 {
 	if sc.offsets != nil && itemID != "" {
-		if off, _, err := sc.offsets.GetSegmentOffsets(ctx, itemID, contentKey, fileIndex, len(declared), declared); err == nil && len(off) == len(declared)+1 {
+		if off, recorded, err := sc.offsets.GetSegmentOffsets(ctx, itemID, contentKey, fileIndex, len(declared), declared); err == nil && len(off) == len(declared)+1 && (len(recorded) == len(declared) || len(fallback) != len(declared)+1) {
 			return off
 		}
+	}
+	if len(fallback) == len(declared)+1 {
+		return fallback
 	}
 	starts := make([]int64, len(declared)+1)
 	var acc int64
