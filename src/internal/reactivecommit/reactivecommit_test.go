@@ -232,3 +232,25 @@ func TestClassifyPositiveIdentityMismatchParks(t *testing.T) {
 		t.Fatalf("mismatch=%q strong=%v err=%v", mismatch, strong, err)
 	}
 }
+
+func TestMissingSourceParksWithoutRegistering(t *testing.T) {
+	path := t.TempDir() + "/gone.strm" // never created
+	repo := &abortRepo{
+		proposal: playbackcoverage.Proposal{RepresentationID: "nntp:representation", ItemID: "item", FileID: "file"},
+		item: &store.Item{DisplayName: "Movie.2024.WEB-DL", StrmPath: &path, Metadata: store.SubmissionMetadata{
+			ProviderIdentity: &store.ProviderIdentity{Kind: "movie", Year: 2024, IDs: store.ProviderIDs{TMDB: "42"}},
+		}},
+	}
+	registrar := &recordingRegistrar{}
+	service, err := New(repo, registrar, unusedOutput{}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Commit(t.Context(), Request{RepresentationID: repo.proposal.RepresentationID, Mode: "auto", TargetName: "classic"})
+	if err != nil || result.State != "parked" || result.Reason != ReasonSourceMissing {
+		t.Fatalf("result=%+v err=%v, want parked/%s", result, err, ReasonSourceMissing)
+	}
+	if repo.parked != ReasonSourceMissing || registrar.commits != 0 || repo.aborted {
+		t.Fatalf("parked=%q commits=%d aborted=%v", repo.parked, registrar.commits, repo.aborted)
+	}
+}

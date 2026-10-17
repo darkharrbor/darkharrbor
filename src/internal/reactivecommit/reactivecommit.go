@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"time"
 
@@ -98,6 +99,10 @@ type Result struct {
 	Reason         string
 }
 
+// ReasonSourceMissing parks a representation whose committed source .strm no
+// longer exists.
+const ReasonSourceMissing = "source_missing"
+
 // ErrCommitInProgress reports that another caller holds the representation's
 // commit right now. It is a normal, transient contention outcome, not a fault.
 var ErrCommitInProgress = errors.New("reactivecommit: commit already in progress")
@@ -165,6 +170,16 @@ func (s *Service) Commit(ctx context.Context, req Request) (result Result, retEr
 		return Result{}, errors.New("reactivecommit: episode bound exceeded")
 	}
 	if _, err := os.Stat(*item.StrmPath); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			// The source .strm is gone (item removed or re-materialised
+			// elsewhere). Retrying cannot fix that, and an error here was
+			// logged at ERROR every backoff step forever, restarting from
+			// 30 s on every process restart. Park it with a reason instead.
+			if perr := s.repo.ParkReactiveCommit(ctx, proposal.RepresentationID, ReasonSourceMissing, s.now().UTC()); perr != nil {
+				return Result{}, perr
+			}
+			return Result{State: "parked", Reason: ReasonSourceMissing}, nil
+		}
 		return Result{}, fmt.Errorf("reactivecommit: committed source unavailable: %w", err)
 	}
 	reason, strong, err := s.classify(ctx, proposal, item)
