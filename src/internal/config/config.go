@@ -146,6 +146,11 @@ type Config struct {
 		// "no metadata/swarm found" signal, not a generic stall, so it does
 		// not need the full stall timeout either. Default 5.
 		DeadSentinelGraceMin int
+		// UncachedMinSeeders is the fewest seeders an indexer must report
+		// for an uncached torrent to be offered to the arrs. A release whose
+		// indexer reports fewer is dropped from search results; one with no
+		// seeder count is kept. 0 disables the filter. Default 1.
+		UncachedMinSeeders int
 		// RequireCached enforces that ALL submissions must be cached on TorBox.
 		// When true (default), uncached grabs are rejected immediately with a
 		// clear error regardless of the governor budget. Set to false only if
@@ -877,6 +882,7 @@ func defaultConfig() Config {
 	cfg.Governor.WindowDays = 15
 	cfg.Governor.StallTimeoutMin = 30
 	cfg.Governor.DeadSentinelGraceMin = 5
+	cfg.Governor.UncachedMinSeeders = 1
 	cfg.Governor.SubmitBudgetMin = 15
 	cfg.Governor.RequireCached = true
 	cfg.Governor.TorrentCDNCapacity = 4
@@ -1356,6 +1362,11 @@ func applyEnv(cfg *Config) {
 	if v := strings.TrimSpace(os.Getenv("HARRBOR_GOVERNOR_DEAD_SENTINEL_GRACE_MIN")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.Governor.DeadSentinelGraceMin = n
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("HARRBOR_GOVERNOR_UNCACHED_MIN_SEEDERS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.Governor.UncachedMinSeeders = n
 		}
 	}
 	if v := strings.TrimSpace(os.Getenv("HARRBOR_TORRENT_SUBMIT_BUDGET_MIN")); v != "" {

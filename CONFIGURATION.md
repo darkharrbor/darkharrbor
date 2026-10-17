@@ -2064,7 +2064,7 @@ provided every key is on the allowlist. Source of truth: `tuningKeys`,
 
 **Acquisition** -- `HARRBOR_PREFERENCE`, `HARRBOR_GOVERNOR_UNCACHED_BUDGET`,
 `HARRBOR_GOVERNOR_STALL_TIMEOUT_MIN`,
-`HARRBOR_GOVERNOR_DEAD_SENTINEL_GRACE_MIN`,
+`HARRBOR_GOVERNOR_DEAD_SENTINEL_GRACE_MIN`, `HARRBOR_GOVERNOR_UNCACHED_MIN_SEEDERS`,
 `HARRBOR_TORRENT_SUBMIT_BUDGET_MIN`, `HARRBOR_TORRENT_KEEPWARM_DAYS`,
 `HARRBOR_SUPPRESSION_TTL_HOURS`, `HARRBOR_SEARCH_BUDGET_CAP`,
 `HARRBOR_SEARCH_BUDGET_SUPPRESS_DAYS`
@@ -2107,6 +2107,7 @@ so a value set in Compose is overridden by the same key here.
 | `HARRBOR_MEDIAFLOW_PUBLIC_IP` | *(empty)* | Optional literal public egress IP for `/proxy/ip`; omit it to use bounded runtime discovery |
 | `HARRBOR_GOVERNOR_STALL_TIMEOUT_MIN` | `30` | Minutes an uncached torrent may sit in a provider-reported stalled/no-swarm state. Never blacklists -- later swarm recovery stays possible |
 | `HARRBOR_GOVERNOR_DEAD_SENTINEL_GRACE_MIN` | `5` | Minutes TorBox's own dead-sentinel state is tolerated before it is treated as terminal. Deliberately shorter than the stall timeout |
+| `HARRBOR_GOVERNOR_UNCACHED_MIN_SEEDERS` | `1` | Fewest seeders an indexer must report for an **uncached** torrent to appear in search results. A release reporting fewer is dropped (it would sit in TorBox `checking` holding an Active Slot); a release with no seeder count is kept; cached releases are never filtered. Applies when the cache state was checked (uncached lane in derank mode). `0` disables |
 | `HARRBOR_TORRENT_SUBMIT_BUDGET_MIN` | `15` | Minutes a submitted source may go without transferring ANY bytes before it is treated as blacklist-worthy. Stronger signal than a stall, so it is a separate budget |
 | `HARRBOR_TORRENT_KEEPWARM_DAYS` | `20` | Recent-play window making a Ready torrent a keep-warm candidate. `0` disables the keep-warm janitor entirely |
 | `HARRBOR_SUPPRESSION_TTL_HOURS` | `72` | How long a suppressed release stays suppressed |

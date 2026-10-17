@@ -221,7 +221,7 @@ func (s *Server) eligibleTorrents(r *http.Request, torrents []prowlarr.Release, 
 		hash string
 	}
 	cands := make([]tc, 0, len(torrents))
-	seen := make(map[string]bool, len(torrents))
+	seen := make(map[string]int, len(torrents))
 	// Per-hash exclusions are DEBUG; one INFO line per search says how many.
 	blacklistedN := 0
 	defer func() {
@@ -238,10 +238,15 @@ func (s *Server) eligibleTorrents(r *http.Request, torrents []prowlarr.Release, 
 		if h == "" {
 			continue // no hash: cannot cache-check or resolve a grab
 		}
-		if seen[h] {
-			continue // dedup: same torrent returned by multiple Prowlarr indexers
+		if idx, dup := seen[h]; dup {
+			// Same torrent from several indexers: keep the highest seeder
+			// count, since one stale index reporting 0 must not hide it.
+			if idx >= 0 && rel.Seeders != nil && (cands[idx].rel.Seeders == nil || *rel.Seeders > *cands[idx].rel.Seeders) {
+				cands[idx].rel.Seeders = rel.Seeders
+			}
+			continue
 		}
-		seen[h] = true
+		seen[h] = -1 // filtered unless appended below
 		if blacklisted, identity, blErr := isTorrentBlacklisted(r.Context(), s.store, h); blErr != nil {
 			s.log.Warn("selection: torrent blacklist check failed (non-fatal, proceeding)",
 				"event", "torrent_blacklist_check_failed",
@@ -267,6 +272,7 @@ func (s *Server) eligibleTorrents(r *http.Request, torrents []prowlarr.Release, 
 				continue
 			}
 		}
+		seen[h] = len(cands)
 		cands = append(cands, tc{rel, h})
 	}
 
@@ -280,12 +286,27 @@ func (s *Server) eligibleTorrents(r *http.Request, torrents []prowlarr.Release, 
 	}
 
 	items := make([]torznabItem, 0, len(cands))
+	lowSeedN := 0
+	defer func() {
+		if lowSeedN > 0 {
+			s.log.Info("selection: excluded uncached torrents below seeder minimum",
+				"event", "torrent_selection_low_seeders", "count", lowSeedN,
+				"min_seeders", s.cfg.Governor.UncachedMinSeeders)
+		}
+	}()
 	for _, c := range cands {
 		if checkedSet != nil && !checkedSet[c.hash] {
 			continue
 		}
 		isCached := cachedSet != nil && cachedSet[c.hash]
 		if !s.cfg.UncachedTorrentAllowed() && !isCached {
+			continue
+		}
+		// An uncached torrent has to be downloaded from its swarm; with no
+		// seeders it sits in TorBox "checking" holding a slot until the
+		// dead-sentinel grace fails it. Cached ones need no swarm.
+		if cachedSet != nil && !isCached && belowSeederMinimum(c.rel.Seeders, s.cfg.Governor.UncachedMinSeeders) {
+			lowSeedN++
 			continue
 		}
 		if s.isReleaseSuppressed(r.Context(), c.rel.Title, c.rel.Size, suppress.LaneTorrent) {
@@ -333,6 +354,12 @@ func (s *Server) eligibleTorrents(r *http.Request, torrents []prowlarr.Release, 
 		})
 	}
 	return items
+}
+
+// belowSeederMinimum reports whether an indexer-reported seeder count is
+// below min. An unknown count (nil) is not below it; min <= 0 disables.
+func belowSeederMinimum(seeders *int, min int) bool {
+	return min > 0 && seeders != nil && *seeders < min
 }
 
 func tagUncachedTitle(title string) string {

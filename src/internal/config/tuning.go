@@ -43,6 +43,7 @@ var tuningKeys = map[string]bool{
 	"HARRBOR_GOVERNOR_UNCACHED_BUDGET":          true,
 	"HARRBOR_GOVERNOR_STALL_TIMEOUT_MIN":        true,
 	"HARRBOR_GOVERNOR_DEAD_SENTINEL_GRACE_MIN":  true,
+	"HARRBOR_GOVERNOR_UNCACHED_MIN_SEEDERS":     true,
 	"HARRBOR_TORRENT_SUBMIT_BUDGET_MIN":         true,
 	"HARRBOR_TORRENT_KEEPWARM_DAYS":             true,
 	"HARRBOR_SUPPRESSION_TTL_HOURS":             true,
@@ -480,6 +481,9 @@ func applyTuning(cfg *Config, values map[string]string) {
 	}
 	if value, ok := tuningInt(values, "HARRBOR_GOVERNOR_DEAD_SENTINEL_GRACE_MIN"); ok {
 		cfg.Governor.DeadSentinelGraceMin = value
+	}
+	if value, ok := tuningInt(values, "HARRBOR_GOVERNOR_UNCACHED_MIN_SEEDERS"); ok && value >= 0 {
+		cfg.Governor.UncachedMinSeeders = value
 	}
 	if value, ok := tuningInt(values, "HARRBOR_TORRENT_SUBMIT_BUDGET_MIN"); ok {
 		cfg.Governor.SubmitBudgetMin = value

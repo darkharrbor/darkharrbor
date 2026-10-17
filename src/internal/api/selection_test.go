@@ -528,3 +528,69 @@ func TestSearchAvailabilityDoesNotPersistOracleErrors(t *testing.T) {
 		t.Fatal("an oracle error was persisted as an observation")
 	}
 }
+
+func TestEligibleTorrentsDropsUncachedBelowSeederMinimum(t *testing.T) {
+	const (
+		cachedZero  = "4444444444444444444444444444444444444444"
+		deadHash    = "5555555555555555555555555555555555555555"
+		seededHash  = "6666666666666666666666666666666666666666"
+		unknownHash = "7777777777777777777777777777777777777777"
+	)
+	zero, three := 0, 3
+	releases := []prowlarr.Release{
+		{Title: "Cached.Zero.Seeds", InfoHash: cachedZero, Seeders: &zero},
+		{Title: "Dead.Uncached", InfoHash: deadHash, Seeders: &zero},
+		{Title: "Seeded.Uncached", InfoHash: seededHash, Seeders: &three},
+		{Title: "Unknown.Seeds.Uncached", InfoHash: unknownHash},
+	}
+	for _, tt := range []struct {
+		min  int
+		want string
+	}{
+		{1, "Cached.Zero.Seeds|Seeded.Uncached.DH-UNCACHED|Unknown.Seeds.Uncached.DH-UNCACHED"},
+		{0, "Cached.Zero.Seeds|Dead.Uncached.DH-UNCACHED|Seeded.Uncached.DH-UNCACHED|Unknown.Seeds.Uncached.DH-UNCACHED"},
+	} {
+		oracle := newSearchAvailabilityFakeProvider("torbox", true, map[string]bool{
+			cachedZero: true, deadHash: false, seededHash: false, unknownHash: false,
+		})
+		cfg := &config.Config{}
+		cfg.Routing.Preference = []string{config.LaneTorBoxTorrent, config.LaneUncachedTorrentDerank}
+		cfg.Availability.TTLHours = 72
+		cfg.Governor.UncachedMinSeeders = tt.min
+		server := &Server{
+			cfg: cfg, log: slog.New(slog.NewTextHandler(io.Discard, nil)), store: newTorrentBlacklistTestStore(t),
+			prov: oracle, allProviders: map[string]provider.Provider{"torbox": oracle}, providerOrder: []string{"torbox"},
+		}
+		req := httptest.NewRequest(http.MethodGet, "/api?t=search", nil)
+		items := server.eligibleTorrents(req, releases, "2040", time.Now().UTC().Format(time.RFC1123Z), 0)
+		titles := make([]string, 0, len(items))
+		for _, item := range items {
+			titles = append(titles, item.Title)
+		}
+		if got := strings.Join(titles, "|"); got != tt.want {
+			t.Fatalf("min=%d: titles = %s, want %s", tt.min, got, tt.want)
+		}
+	}
+}
+
+func TestEligibleTorrentsDedupKeepsHighestSeeders(t *testing.T) {
+	const h = "8888888888888888888888888888888888888888"
+	zero, many := 0, 999
+	oracle := newSearchAvailabilityFakeProvider("torbox", true, map[string]bool{h: false})
+	cfg := &config.Config{}
+	cfg.Routing.Preference = []string{config.LaneTorBoxTorrent, config.LaneUncachedTorrentDerank}
+	cfg.Availability.TTLHours = 72
+	cfg.Governor.UncachedMinSeeders = 1
+	server := &Server{
+		cfg: cfg, log: slog.New(slog.NewTextHandler(io.Discard, nil)), store: newTorrentBlacklistTestStore(t),
+		prov: oracle, allProviders: map[string]provider.Provider{"torbox": oracle}, providerOrder: []string{"torbox"},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api?t=search", nil)
+	items := server.eligibleTorrents(req, []prowlarr.Release{
+		{Title: "Same.Release", InfoHash: h, Seeders: &zero},
+		{Title: "Same.Release", InfoHash: h, Seeders: &many},
+	}, "2040", time.Now().UTC().Format(time.RFC1123Z), 0)
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want the release kept on its best seeder count", len(items))
+	}
+}
