@@ -3,6 +3,7 @@ package cachegate
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/darkharrbor/darkharrbor/internal/governor"
 	"github.com/darkharrbor/darkharrbor/internal/provider"
@@ -44,5 +45,28 @@ func TestCheckAppliesProviderGovernorToUncachedTorrent(t *testing.T) {
 	gate := New(prov, fullGovernor(prov), false)
 	if _, err := gate.Check(context.Background(), &store.Item{SourceType: store.SourceTypeTorrent}); err == nil {
 		t.Fatal("uncached torrent bypassed the full provider slot governor")
+	}
+}
+
+// heldProvider blocks like a client waiting out a 429 Retry-After hold.
+type heldProvider struct{ provider.Provider }
+
+func (heldProvider) CheckCached(ctx context.Context, _ *store.Item) (*provider.CheckCachedResult, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestCheckBoundsHeldProviderAndMarksRetryable(t *testing.T) {
+	old := CheckTimeout
+	CheckTimeout = 50 * time.Millisecond
+	defer func() { CheckTimeout = old }()
+	gate := New(heldProvider{}, nil, false)
+	start := time.Now()
+	_, err := gate.Check(context.Background(), &store.Item{SourceType: store.SourceTypeTorrent})
+	if err == nil || !provider.IsRetryable(err) {
+		t.Fatalf("err=%v, want retryable timeout", err)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatalf("check took %v, want bounded", time.Since(start))
 	}
 }

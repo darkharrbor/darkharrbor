@@ -2,7 +2,9 @@ package cachegate
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/darkharrbor/darkharrbor/internal/governor"
 	"github.com/darkharrbor/darkharrbor/internal/provider"
@@ -27,15 +29,27 @@ func New(client provider.Provider, gov *governor.Governor, requireCached bool) *
 	return &Gate{client: client, governor: gov, requireCached: requireCached}
 }
 
+// CheckTimeout bounds one provider cache check.
+var CheckTimeout = 15 * time.Second
+
 // Check runs the cache check for an item.
 // If requireCached is true (default), uncached submissions are rejected
 // immediately with ErrNotCached regardless of the governor budget. This
 // prevents uncached TorBox transfers when the item came from a non-Dark Harrbor
 // indexer that bypassed the Torznab cache-first search.
 func (g *Gate) Check(ctx context.Context, item *store.Item) (*Result, error) {
-	checkResult, err := g.client.CheckCached(ctx, item)
+	// Bounded: after a provider 429 the client waits out Retry-After before
+	// the call, and this runs inside an arr's qBit add request and the
+	// one-at-a-time submit paths. A check that runs out its own deadline is
+	// transient (retryable), so callers defer rather than fail the item.
+	checkCtx, cancel := context.WithTimeout(ctx, CheckTimeout)
+	checkResult, err := g.client.CheckCached(checkCtx, item)
+	cancel()
 
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			err = provider.MarkRetryable(err)
+		}
 		return nil, fmt.Errorf("cachegate: %w", err)
 	}
 

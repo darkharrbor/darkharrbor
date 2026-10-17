@@ -2643,7 +2643,12 @@ func (s *Server) resolveNZBAsync(ctx context.Context, item *store.Item) {
 	// (torbox_nzb enabled and ranked before nntp_nzb, or NNTP disabled). When NNTP
 	// outranks TorBox it is the always-succeeding floor, so the TorBox pass is skipped.
 	if s.cfg.TorBoxNZBPreferredOverNNTP() && providerCaps(s.prov).UsenetIngest {
-		result, err := s.prov.CheckCached(ctx, item)
+		// Bounded: after a TorBox 429 the client's policy holds queries for
+		// the Retry-After, and this check used to wait it out in full (102 s
+		// measured with a 120 s hold) before the NNTP floor could start.
+		ccCtx, ccCancel := context.WithTimeout(ctx, nzbCacheCheckTimeout)
+		result, err := s.prov.CheckCached(ccCtx, item)
+		ccCancel()
 		switch {
 		case err != nil:
 			log.Warn("nzb: torbox usenet checkcached failed", "error", err)
@@ -2675,6 +2680,10 @@ func (s *Server) resolveNZBAsync(ctx context.Context, item *store.Item) {
 		log.Error("nzb: persist failed state", "error", err)
 	}
 }
+
+// nzbCacheCheckTimeout bounds the optional TorBox usenet cache check before
+// the NNTP lane; on timeout the item goes to NNTP.
+const nzbCacheCheckTimeout = 15 * time.Second
 
 // submitNZBToTorBox submits a cache-confirmed NZB to TorBox and persists the
 // returned ids. Returns true when the item entered the TorBox lane (a remote or
