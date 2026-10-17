@@ -298,12 +298,13 @@ func main() {
 		applyFreeFallback()
 		log.Warn("plan discovery skipped, using config defaults", "reason", "HARRBOR_TORBOX_API_TOKEN is empty")
 	} else {
-		discCtx, discCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		info, discErr := torboxClient.GetUserInfo(discCtx)
-		discCancel()
+		info, discErr := discoverTorBoxPlan(context.Background(), log, torboxClient.GetUserInfo, planDiscoveryBackoff)
 		if discErr != nil {
 			applyFreeFallback()
-			log.Warn("plan discovery failed, using config defaults", "error", discErr)
+			// The fallback is the conservative free-tier policy: no TorBox
+			// usenet, no News Server, free-tier slot rules. On a paid
+			// account that disables lanes until the next restart, so say so.
+			log.Error("plan discovery failed, using conservative free-tier defaults until restart (TorBox usenet and News Server disabled)", "error", discErr)
 		} else {
 			accountNow := time.Now()
 			dSlots, dMaxBytes, dUsenet, dFreeTier := torbox.ResolveCaps(info, accountNow)
@@ -2248,6 +2249,31 @@ func submitViaLane(
 	}
 
 	return true, provResp, nil
+}
+
+// planDiscoveryBackoff is the wait before each retry of a transient plan
+// discovery failure (429, 5xx, transport): ~65 s in all. A single TorBox 429
+// at boot used to drop a Pro account to the free-tier fallback until the next
+// restart (measured 2026-10-17 on a restart during a TorBox incident).
+var planDiscoveryBackoff = []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second, 18 * time.Second, 30 * time.Second}
+
+// discoverTorBoxPlan calls getUserInfo with a 10 s timeout per attempt,
+// retrying only errors marked retryable.
+func discoverTorBoxPlan(ctx context.Context, log *slog.Logger, getUserInfo func(context.Context) (*torbox.UserInfo, error), backoff []time.Duration) (*torbox.UserInfo, error) {
+	for attempt := 0; ; attempt++ {
+		attemptCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		info, err := getUserInfo(attemptCtx)
+		cancel()
+		if err == nil || !provider.IsRetryable(err) || attempt >= len(backoff) {
+			return info, err
+		}
+		log.Warn("plan discovery: transient failure, retrying", "error", err, "attempt", attempt+1, "retry_in", backoff[attempt])
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff[attempt]):
+		}
+	}
 }
 
 // isRetryableSubmitError reports whether a provider submit error is transient
