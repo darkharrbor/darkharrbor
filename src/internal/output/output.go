@@ -340,6 +340,13 @@ func (w *StrmWriter) Write(ctx context.Context, item *store.Item, files []provid
 		videoTM = tmMatch
 	}
 
+	// A release titled for one season (or one episode) can carry a whole
+	// series: measured 2026-10-17, "How I Met Your Mother S06 ..." held 208
+	// episodes across S01-S09. Writing all of them left the arr importing the
+	// titled season and parking the rest as "not found in the grabbed
+	// release" forever (the long-stuck SpongeBob queue had the same shape).
+	video, videoTM = scopeVideoToReleaseTitle(item.DisplayName, video, videoTM)
+
 	categoryDir, err := safeJoinUnder(w.strmRoot, item.Category)
 	if err != nil {
 		return "", fmt.Errorf("output: invalid category %q for item %s: %w", item.Category, item.ID, err)
@@ -1076,4 +1083,108 @@ func (w *StrmWriter) ownerIsDead(ctx context.Context, owner string) bool {
 	}
 	live, err := w.ownerLive(ctx, owner)
 	return err == nil && !live
+}
+
+var (
+	// S06, S06E05, S06E05E06, S06E05-E07 (title or file name)
+	reSeasonEp = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])s(\d{1,2})(?:[ ._-]?e(\d{1,3})(?:(?:-?e|-)(\d{1,3}))?)?(?:[^a-z0-9]|$)`)
+	// 6x05 (file names)
+	reNxNN = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(\d{1,2})x(\d{2,3})(?:[^a-z0-9]|$)`)
+	// "Season 6"
+	reSeasonWord = regexp.MustCompile(`(?i)\bseason[ ._-]?(\d{1,2})\b`)
+	// S01-S09, S01-09, Seasons 1-9, Complete Series
+	reMultiSeason = regexp.MustCompile(`(?i)\bs\d{1,2}[ ._]?-[ ._]?s?\d{1,2}\b|\bseasons?[ ._-]?\d{1,2}[ ._]?-[ ._]?\d{1,2}\b|\bcomplete\b|\bcollection\b`)
+)
+
+type releaseScope struct {
+	season          int // 0 = unknown
+	epFirst, epLast int // 0 = whole season
+}
+
+// releaseScopeFromTitle returns the single season (and episode range) a
+// release title names, or ok=false when it names none or several seasons.
+func releaseScopeFromTitle(title string) (releaseScope, bool) {
+	if reMultiSeason.MatchString(title) {
+		return releaseScope{}, false
+	}
+	seasons := map[int]bool{}
+	var sc releaseScope
+	for _, m := range reSeasonEp.FindAllStringSubmatch(title, -1) {
+		n, _ := strconv.Atoi(m[1])
+		seasons[n] = true
+		sc.season = n
+		if m[2] != "" {
+			sc.epFirst, _ = strconv.Atoi(m[2])
+			sc.epLast = sc.epFirst
+			if m[3] != "" {
+				sc.epLast, _ = strconv.Atoi(m[3])
+			}
+		}
+	}
+	if len(seasons) == 0 {
+		if m := reSeasonWord.FindStringSubmatch(title); m != nil {
+			n, _ := strconv.Atoi(m[1])
+			seasons[n] = true
+			sc.season = n
+		}
+	}
+	if len(seasons) != 1 || sc.season == 0 {
+		return releaseScope{}, false
+	}
+	if sc.epLast < sc.epFirst {
+		sc.epLast = sc.epFirst
+	}
+	return sc, true
+}
+
+// fileSeasonEp parses a file name's season/episode; ok=false if absent.
+func fileSeasonEp(name string) (season, ep int, ok bool) {
+	base := path.Base(strings.ReplaceAll(name, "\\", "/"))
+	if m := reSeasonEp.FindStringSubmatch(base); m != nil && m[2] != "" {
+		season, _ = strconv.Atoi(m[1])
+		ep, _ = strconv.Atoi(m[2])
+		return season, ep, true
+	}
+	if m := reNxNN.FindStringSubmatch(base); m != nil {
+		season, _ = strconv.Atoi(m[1])
+		ep, _ = strconv.Atoi(m[2])
+		return season, ep, true
+	}
+	return 0, 0, false
+}
+
+// scopeVideoToReleaseTitle drops video files whose names place them outside
+// the single season/episode range the release title names. Files without a
+// parseable season/episode are kept; if nothing would remain, or the title
+// is multi-season or unparseable, the input is returned unchanged.
+func scopeVideoToReleaseTitle(title string, video []provider.CachedFile, tm []*torrentmeta.FileEntry) ([]provider.CachedFile, []*torrentmeta.FileEntry) {
+	if len(video) < 2 || len(tm) != len(video) {
+		return video, tm // callers index tm in lockstep with video
+	}
+	sc, ok := releaseScopeFromTitle(title)
+	if !ok {
+		return video, tm
+	}
+	keepV := make([]provider.CachedFile, 0, len(video))
+	keepT := make([]*torrentmeta.FileEntry, 0, len(video))
+	dropped := 0
+	for i, f := range video {
+		name := f.Name
+		if tm[i] != nil && tm[i].Path != "" {
+			name = tm[i].Path
+		} else if f.RelativePath != "" {
+			name = f.RelativePath
+		}
+		s, e, parsed := fileSeasonEp(name)
+		if parsed && (s != sc.season || (sc.epFirst > 0 && (e < sc.epFirst || e > sc.epLast))) {
+			dropped++
+			continue
+		}
+		keepV = append(keepV, f)
+		keepT = append(keepT, tm[i])
+	}
+	if dropped == 0 || len(keepV) == 0 {
+		return video, tm
+	}
+	return keepV, keepT
 }
