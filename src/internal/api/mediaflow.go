@@ -28,14 +28,17 @@ import (
 )
 
 const (
-	mediaFlowMaxBody = 1 << 20
+	// Real AIOStreams entries carry long debrid URLs plus request/response
+	// headers (~1 KiB each, not the ~90-byte minimum), so a 1,012-URL
+	// Inception batch overran the former 1 MiB cap on 2026-10-16 and the
+	// whole title was dropped. 16 MiB fits mediaFlowMaxURLs at ~4 KiB each.
+	mediaFlowMaxBody = 16 << 20
 	// Aggregators post an entire result set in ONE call: real AIOStreams
 	// batches of 539 and 631 URLs were observed on 2026-08-16, and the
 	// former cap of 200 rejected them wholesale, so every stream for a
 	// title was discarded and playback presented as "media cannot be
-	// played". The binding bound is mediaFlowMaxBody (1 MiB), which a
-	// minimal ~90-byte entry caps near 11k URLs regardless of this value;
-	// this limit stays finite so the slice pre-allocation below is bounded.
+	// played". This limit stays finite so the slice pre-allocation below
+	// is bounded; mediaFlowMaxBody is sized to admit it.
 	mediaFlowMaxURLs          = 4096
 	mediaFlowMaxURLBytes      = 16 << 10
 	mediaFlowMaxFilenameBytes = 1 << 10
@@ -146,6 +149,12 @@ func (s *Server) handleMediaFlowGenerate(w http.ResponseWriter, r *http.Request)
 	var req mediaFlowGenerateRequest
 	dec := json.NewDecoder(r.Body)
 	if err := dec.Decode(&req); err != nil || len(req.URLs) == 0 {
+		if s.log != nil {
+			var tooBig *http.MaxBytesError
+			s.log.Warn("mediaflow generate: batch rejected",
+				"reason", map[bool]string{true: "body exceeds limit", false: "malformed or empty"}[errors.As(err, &tooBig)],
+				"limit_bytes", mediaFlowMaxBody, "urls", len(req.URLs))
+		}
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
@@ -182,8 +191,10 @@ func (s *Server) handleMediaFlowGenerate(w http.ResponseWriter, r *http.Request)
 	urls := make([]string, 0, len(req.URLs))
 	for _, candidate := range req.URLs {
 		if candidate.Endpoint != "" && candidate.Endpoint != "/proxy/stream" {
-			http.Error(w, "Bad Request", http.StatusBadRequest)
-			return
+			// Same per-slot degradation as an unproxyable destination below:
+			// one odd entry must not drop the aggregator's whole result set.
+			urls = append(urls, candidate.DestinationURL)
+			continue
 		}
 		if p := strings.TrimSpace(candidate.QueryParams["api_password"]); p != "" && !mediaFlowSecretEqual(p, s.cfg.MediaFlow.Password) {
 			http.Error(w, "Forbidden", http.StatusForbidden)
@@ -224,7 +235,7 @@ func (s *Server) handleMediaFlowGenerate(w http.ResponseWriter, r *http.Request)
 				return
 			}
 		}
-		ticket, err := normalizeMediaFlowTicket(mediaFlowTicket{
+		raw := mediaFlowTicket{
 			Version:          mediaFlowTicketVersion,
 			RepresentationID: representationID,
 			Identity:         captureIdentity,
@@ -232,10 +243,28 @@ func (s *Server) handleMediaFlowGenerate(w http.ResponseWriter, r *http.Request)
 			Filename:         candidate.Filename,
 			RequestHeaders:   candidate.RequestHeaders,
 			ResponseHeaders:  candidate.ResponseHeaders,
-		})
+		}
+		ticket, err := normalizeMediaFlowTicket(raw)
+		if err != nil && raw.Filename != "" {
+			// The filename is cosmetic (Content-Disposition only). An
+			// aggregator result with an over-long or oddly-encoded name
+			// must not cost the stream its proxy ticket.
+			raw.Filename = ""
+			ticket, err = normalizeMediaFlowTicket(raw)
+		}
 		if err != nil {
-			http.Error(w, "Bad Request", http.StatusBadRequest)
-			return
+			// One unusable candidate previously failed the WHOLE batch with
+			// 400, and AIOStreams then dropped every stream for the title
+			// ("failed to proxy streams, removing them"). /generate_urls is
+			// positional, so answer this slot with the addon's own URL
+			// unproxied and keep the rest of the batch.
+			if s.log != nil {
+				s.log.Warn("mediaflow generate: candidate not proxyable, passing through",
+					"destination", mediaFlowDestinationHost(candidate.DestinationURL),
+					"error", httpstream.Sanitize(err))
+			}
+			urls = append(urls, candidate.DestinationURL)
+			continue
 		}
 		sealed, err := sealMediaFlowTicket(s.cfg.Server.StreamSecret, ticket)
 		if err != nil {
