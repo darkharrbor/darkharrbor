@@ -1617,6 +1617,7 @@ complete `.strm` contents or proxy access logs in support bundles.
 |---|---|---|
 | `HARRBOR_TORBOX_API_TOKEN` | (sealed) | TorBox API token |
 | `HARRBOR_TORBOX_BASE_URL` | `https://api.torbox.app/v1` | API base URL |
+| `HARRBOR_TORBOX_SEARCH_BASE_URL` | `https://search-api.torbox.app` | TorBox search API base URL. Change only for a proxy or a test double |
 | `HARRBOR_TORBOX_USENET` | `auto` | Usenet capability: `auto`/`on`/`off` |
 
 ## NNTP Providers
@@ -2175,8 +2176,11 @@ not queued.
   failure. In-memory and per-process: a restart forgets, costing one re-fetch
   per segment. Lower it only if you expect a provider to backfill articles it
   previously reported missing.
-- **`HARRBOR_NNTP_HOST`**, **`HARRBOR_NNTP_PORT`**, **`HARRBOR_NNTP_TLS`**
-  Connection settings for the primary direct-NNTP provider. The wizard collects
+- **`HARRBOR_NNTP_HOST`**, **`HARRBOR_NNTP_PORT`**, **`HARRBOR_NNTP_TLS`**,
+  **`HARRBOR_NNTP_USERNAME`**, **`HARRBOR_NNTP_PASSWORD`**
+  Connection settings and credentials for the primary direct-NNTP provider.
+  The username and password are secrets: keep them in `secrets.sealed`, not in
+  compose or `.env`. The wizard collects
   these and seals them, so setting them by hand is a deliberate override; see
   [Configuration Sources](#configuration-sources-precedence-highest-first) for
   which source wins.
