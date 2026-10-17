@@ -175,3 +175,44 @@ func TestWebDAVResolveItemBindsExactIndexToArtifact(t *testing.T) {
 		})
 	}
 }
+
+// Regression 2026-10-17: once the arr imports (moves) the .strm out of DH's
+// output folder, the exact index was unreadable from disk and every imported
+// usenet episode failed with "unexpected nzb_file_index" (Jellyfin 500). The
+// authoritative strm_blobs row must stand in for the moved file.
+func TestWebDAVResolveItemFallsBackToBlobAfterArrImport(t *testing.T) {
+	const artifactURL = "http://darkharrbor:8381/dav/tv/release/Recovered.Show.S01E01.mkv?nzb_file_index=1"
+	for _, test := range []struct {
+		name       string
+		requestRaw string
+		wantIndex  int
+		wantErr    bool
+	}{
+		{name: "matching index after move", requestRaw: "?nzb_file_index=1", wantIndex: 1},
+		{name: "omitted index after move", wantIndex: 1},
+		{name: "conflicting index still rejected", requestRaw: "?nzb_file_index=0", wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			srv, stem := newWebDAVExactIndexServer(t, artifactURL)
+			ctx := context.Background()
+			item, err := srv.store.GetItemByID(ctx, "webdav-index")
+			if err != nil || item == nil || item.StrmPath == nil {
+				t.Fatalf("item: %v %v", item, err)
+			}
+			if err := srv.store.UpsertStrmBlobAt(ctx, item.ID, 0, "tv/release/"+stem+".strm", artifactURL); err != nil {
+				t.Fatalf("blob: %v", err)
+			}
+			if err := os.Remove(*item.StrmPath); err != nil { // the arr moved it into the library
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodGet, "/dav/tv/release/"+stem+".mkv"+test.requestRaw, nil)
+			got, index, err := srv.webdavResolveItem(req)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("error=%v, wantErr=%v", err, test.wantErr)
+			}
+			if !test.wantErr && (got == nil || index != test.wantIndex) {
+				t.Fatalf("index=%d, want %d", index, test.wantIndex)
+			}
+		})
+	}
+}

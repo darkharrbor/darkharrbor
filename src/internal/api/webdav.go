@@ -25,6 +25,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -211,7 +212,7 @@ func (s *Server) webdavPropfind(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		responses := []davResponse{collectionResponse(path.href(category, relDir)+"/", relDir)}
-		for _, name := range nzbFileNames(item) {
+		for _, name := range s.nzbFileNamesFor(r.Context(), item) {
 			href := path.href(category, relDir, name+".mkv")
 			responses = append(responses, fileResponse(href, name+".mkv", nzbVisibleFileSize(item, name), item.CreatedAt))
 		}
@@ -482,7 +483,7 @@ func (s *Server) webdavResolveItem(r *http.Request) (*store.Item, int, error) {
 	// payload from being selected under an otherwise valid release path.
 	stem := strings.TrimSuffix(fileName, ".mkv")
 	fileIndex := -1
-	for i, name := range nzbFileNames(item) {
+	for i, name := range s.nzbFileNamesFor(r.Context(), item) {
 		if strings.EqualFold(name, stem) {
 			fileIndex = i
 			break
@@ -495,6 +496,9 @@ func (s *Server) webdavResolveItem(r *http.Request) (*store.Item, int, error) {
 		persisted, ok, indexErr := nzbPersistedStreamIndex(item, stem)
 		if indexErr != nil {
 			return nil, 0, indexErr
+		}
+		if !ok {
+			persisted, ok = s.nzbBlobStreamIndex(r.Context(), item.ID, stem)
 		}
 		if !ok {
 			return nil, 0, fmt.Errorf("7z stream index missing from materialized pointer")
@@ -512,6 +516,13 @@ func (s *Server) webdavResolveItem(r *http.Request) (*store.Item, int, error) {
 	persistedExact, hasPersistedExact, exactErr := nzbPersistedFileIndex(item, stem)
 	if exactErr != nil {
 		return nil, 0, exactErr
+	}
+	if !hasPersistedExact {
+		// The on-disk .strm in DH's output folder is gone once the arr
+		// imports it in move mode, which made every imported usenet
+		// episode fail with "unexpected nzb_file_index" (Jellyfin 500).
+		// The DB blob is the authoritative copy of the same URL.
+		persistedExact, hasPersistedExact = s.nzbBlobFileIndex(r.Context(), item.ID, stem)
 	}
 	requestRaw := r.URL.Query().Get("nzb_file_index")
 	if hasPersistedExact {
@@ -718,4 +729,79 @@ func nzbFileNames(item *store.Item) []string {
 // segments always match filesystem directory names (A-B11).
 func sanitizeWebDAVName(s string) string {
 	return output.SanitizeName(s)
+}
+
+// Arr imports in move mode take the materialized .strm files out of DH's
+// output folder. Every NZB WebDAV lookup that used to read those files must
+// fall back to the authoritative strm_blobs rows, or imported usenet
+// episodes 404/500 (2026-10-17: "unexpected nzb_file_index" in Jellyfin).
+
+// blobStrmURL returns the stored .strm URL for stem, if any.
+func (s *Server) blobStrmURL(ctx context.Context, itemID, stem string) (string, bool) {
+	if s.store == nil {
+		return "", false
+	}
+	blobs, err := s.store.GetStrmBlobs(ctx, itemID)
+	if err != nil {
+		return "", false
+	}
+	for _, b := range blobs {
+		if strings.EqualFold(strings.TrimSuffix(filepath.Base(b.RelPath), ".strm"), stem) {
+			return strings.TrimSpace(b.URL), true
+		}
+	}
+	return "", false
+}
+
+// nzbBlobFileIndex is the strm_blobs fallback for nzbPersistedFileIndex.
+func (s *Server) nzbBlobFileIndex(ctx context.Context, itemID, stem string) (int, bool) {
+	raw, ok := s.blobStrmURL(ctx, itemID, stem)
+	if !ok {
+		return 0, false
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return 0, false
+	}
+	idx, err := strconv.Atoi(u.Query().Get("nzb_file_index"))
+	if err != nil || idx < 0 {
+		return 0, false
+	}
+	return idx, true
+}
+
+// nzbBlobStreamIndex is the strm_blobs fallback for nzbPersistedStreamIndex.
+func (s *Server) nzbBlobStreamIndex(ctx context.Context, itemID, stem string) (int, bool) {
+	raw, ok := s.blobStrmURL(ctx, itemID, stem)
+	if !ok {
+		return 0, false
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return 0, false
+	}
+	idx, err := strconv.Atoi(filepath.Base(u.Path))
+	if err != nil || idx < 0 {
+		return 0, false
+	}
+	return idx, true
+}
+
+// nzbFileNamesFor is nzbFileNames with a strm_blobs fallback: when no .strm
+// is left on disk, the stored rows (sorted like os.ReadDir) name the files.
+func (s *Server) nzbFileNamesFor(ctx context.Context, item *store.Item) []string {
+	names := nzbFileNames(item)
+	if s.store == nil || !(len(names) == 1 && names[0] == nzbReleaseDirName(item)) {
+		return names
+	}
+	blobs, err := s.store.GetStrmBlobs(ctx, item.ID)
+	if err != nil || len(blobs) == 0 {
+		return names
+	}
+	out := make([]string, 0, len(blobs))
+	for _, b := range blobs {
+		out = append(out, strings.TrimSuffix(filepath.Base(b.RelPath), ".strm"))
+	}
+	sort.Strings(out)
+	return out
 }
