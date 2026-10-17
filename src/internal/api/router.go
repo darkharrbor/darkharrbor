@@ -224,6 +224,9 @@ type Server struct {
 	// torrentCDNScores is TS-2.3's lane-scoped bounded passive CDN-node
 	// evidence owner. It deliberately does not share identities with HTTP.
 	torrentCDNScores *httpstream.OriginScorer
+	// cdnBreaker is the provider-wide torrent-CDN circuit breaker (see
+	// cdnbreaker.go). Nil-safe.
+	cdnBreaker *cdnBreaker
 	// arrRefresh (TS-4.1) is the optional immediate arr-refresh convenience
 	// fired after a repair chain's terminal blacklist step. Nil-safe: an
 	// unset notifier just skips the convenience refresh.
@@ -712,6 +715,7 @@ func NewServerWithContext(parent context.Context, cfg *config.Config, log *slog.
 	}
 	srv.httpOriginScores = httpstream.NewOriginScorer(srv.nowUTC)
 	srv.torrentCDNScores = httpstream.NewOriginScorer(srv.nowUTC)
+	srv.cdnBreaker = newCDNBreaker(srv.nowUTC)
 	srv.repairState = newRepairState()
 	srv.decayAuditState = newDecayAuditState()
 	srv.httpSelfHeal = newHTTPSelfHealState(srv.nowUTC)
@@ -3804,21 +3808,43 @@ func (s *Server) handleStreamProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// chunked copy via 10MB buffer. For clients that cannot follow redirects.
+	// This fallback used to dial the CDN outside the account governor, with
+	// Go's default client and User-Agent, so every failing stream made a
+	// second ungoverned connection. It now honours the breaker and holds a
+	// TorrentCDNGovOp lease for the whole copy (it IS a live connection).
+	if s.cdnBreaker.Open() {
+		http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if s.torrentGov != nil {
+		lease, lerr := s.torrentGov.Acquire(ctx, TorrentCDNGovOp, streamPriority(r), itemID)
+		if lerr != nil {
+			http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		defer lease.Release()
+	}
 	proxyReq, err := http.NewRequestWithContext(ctx, http.MethodGet, cdnURL, nil)
 	if err != nil {
 		s.log.Warn("stream: proxy req build failed", "item_id", itemID, "error", httpstream.Sanitize(err))
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
+	proxyReq.Header.Set("User-Agent", httpstream.DefaultUserAgent)
 	if rangeHeader := r.Header.Get("Range"); rangeHeader != "" {
 		proxyReq.Header.Set("Range", rangeHeader)
 	}
 	proxyResp, err := http.DefaultClient.Do(proxyReq)
 	if err != nil {
+		if ctx.Err() == nil && httpstream.IsConnectLevel(err) && s.cdnBreaker.NoteConnectFailure(cdnURL) {
+			s.log.Warn("stream: torrent CDN unreachable across hosts; pausing CDN attempts",
+				"pause", cdnBreakerOpenFor.String())
+		}
 		s.log.Warn("stream: proxy upstream failed", "item_id", itemID, "error", httpstream.Sanitize(err))
 		http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	s.cdnBreaker.NoteSuccess()
 	defer func() { _ = proxyResp.Body.Close() }()
 
 	for _, hdr := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"} {
@@ -4252,4 +4278,15 @@ func (s *Server) submitDedup(ctx context.Context, item *store.Item, opts provide
 	}
 	resp, _ := v.(*provider.CreateTaskResponse)
 	return resp, nil
+}
+
+// streamPriority is the account-governor priority for a /stream request:
+// ffprobe relay probes (probe=1; arr import validation and media-server
+// scans) rank below live playback so a probe burst can never take CDN
+// capacity a viewer is waiting on.
+func streamPriority(r *http.Request) accountgov.Priority {
+	if r != nil && r.URL.Query().Get("probe") == "1" {
+		return accountgov.PriorityGrab
+	}
+	return accountgov.PriorityPlayback
 }

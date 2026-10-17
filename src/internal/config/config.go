@@ -145,17 +145,20 @@ type Config struct {
 		// clear error regardless of the governor budget. Set to false only if
 		// you deliberately want to allow uncached TorBox transfers.
 		RequireCached bool
-		// TorrentCDNCapacity bounds concurrent debrid-CDN fetch operations
-		// (playback + TS-1.4 prewarm together) admitted through the shared
-		// accountgov.Governor at once. This is NOT a provider rate limit
-		// (TorBox 429 handling and the existing per-session
-		// StreamReadaheadWorkers cap already own that) — it exists solely so
-		// prewarm (accountgov.PriorityPrewarm) and live playback
-		// (accountgov.PriorityPlayback) actually contend for something when
-		// both run at once, so LC-06's fixed priority has a real effect
-		// instead of staying dormant. Default 4 — generous enough that
-		// today's single/dual-stream playback never queues (see WORKLOG
-		// "TS-1.4"). 0 makes the class unbounded (no arbitration at all).
+		// TorrentCDNCapacity bounds concurrent debrid-CDN connections admitted
+		// through the shared accountgov.Governor at once, across EVERY /stream
+		// path: the bytes=0-0 capability probe, cached chunk fetches, the
+		// passthrough fallback, and TS-1.4 prewarm. Live playback outranks
+		// ffprobe relay probes (PriorityGrab), which outrank prewarm.
+		//
+		// 2026-10-17: the per-session StreamReadaheadWorkers cap was assumed
+		// to keep DH under the provider's limits, but it bounds each stream,
+		// not the number of streams. An arr import burst started hundreds of
+		// probe streams, the capability probe and passthrough dialled outside
+		// this governor, and TorBox's edge then dropped this host's TCP to
+		// every CDN node for hours. Default 4 -- generous enough that
+		// single/dual-stream playback never queues (see WORKLOG "TS-1.4").
+		// 0 makes the class unbounded (no arbitration at all).
 		TorrentCDNCapacity int
 		// HTTPSourceCapacity bounds concurrent HTTP-lane operations: live
 		// playback at accountgov.PriorityPlayback, D9 grab-time preflight at

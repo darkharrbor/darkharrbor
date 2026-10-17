@@ -877,9 +877,34 @@ func (s *Server) streamViaCache(w http.ResponseWriter, r *http.Request, item *st
 			http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
 			return true
 		}
+		if s.cdnBreaker.Open() {
+			// Provider-wide connect failure: no dial, no per-item repair.
+			http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
+			return true
+		}
 		var ranged bool
 		var err error
+		// The bytes=0-0 capability probe is a CDN connection like any chunk
+		// fetch; it used to run outside the governor, one per stream start.
+		var probeLease *accountgov.Lease
+		if s.torrentGov != nil {
+			var lerr error
+			probeLease, lerr = s.torrentGov.Acquire(ctx, TorrentCDNGovOp, streamPriority(r), itemID)
+			if lerr != nil {
+				http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
+				return true
+			}
+		}
 		src, total, contentType, ranged, err = initCDNSource(ctx, cdnURL, windowBytes, reresolve)
+		if probeLease != nil {
+			probeLease.Release()
+		}
+		if err == nil {
+			s.cdnBreaker.NoteSuccess()
+		} else if ctx.Err() == nil && httpstream.IsConnectLevel(err) && s.cdnBreaker.NoteConnectFailure(cdnURL) {
+			s.log.Warn("stream: torrent CDN unreachable across hosts; pausing CDN attempts",
+				"pause", cdnBreakerOpenFor.String())
+		}
 		if err != nil {
 			// PERF-4: the passthrough below is worth running only when it
 			// would do something different. initCDNSource re-resolves for a
@@ -911,7 +936,7 @@ func (s *Server) streamViaCache(w http.ResponseWriter, r *http.Request, item *st
 			// died) than an already-successfully-streaming session breaking
 			// mid-play. Same non-client-cancelled + real-playback gating as
 			// the mid-stream trigger below.
-			if ctx.Err() == nil && altCandidates != nil {
+			if ctx.Err() == nil && altCandidates != nil && !s.cdnBreaker.Open() {
 				s.TriggerRepairAsync(item)
 				// TS-5.1: the same genuine non-client-cancelled real-
 				// playback failure signal TS-4.1 already established is
@@ -981,7 +1006,7 @@ func (s *Server) streamViaCache(w http.ResponseWriter, r *http.Request, item *st
 	// fetch exactly as unleased as before this row.
 	src.gov = s.torrentGov
 	src.govOp = TorrentCDNGovOp
-	src.priority = accountgov.PriorityPlayback
+	src.priority = streamPriority(r)
 	src.session = itemID
 	// TS-2.1: rung-accounting logs use the server's own structured logger.
 	src.log = s.log

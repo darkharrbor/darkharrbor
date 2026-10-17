@@ -1004,7 +1004,6 @@ func copyMediaFlowResponseHeaders(dst, src http.Header) {
 	}
 }
 
-
 // mediaFlowDestinationPathShape returns the first two path segments of a
 // destination URL for diagnostics, never the query (which may carry signed
 // material) nor deeper segments (which may carry tokens).
