@@ -125,6 +125,16 @@ func TestExtractSingleSeason(t *testing.T) {
 		{"No.Season.Here", 0},
 		{"Show.S01E05.720p", 1},
 		{"", 0},
+		{"Spongebob Squarepants Season 6", 6},
+		{"SpongeBob SquarePants  Season 7 Complete", 7},
+		{"SpongeBob.SquarePants.10x08.The.Incredible.Shrinking.SpongeBob", 10},
+		{"Movie.2010.1080p.BluRay.DTS5.1.x264", 0},
+		{"Movie.2010.1920x1080.x265", 0},
+		{"SpongeBob SquarePants Season 1-3 Complete + Bonus", 0},
+		{"Show Seasons 1 2 3", 0},
+		{"Show.Season.1.and.2", 0},
+		{"Show.S1E01.720p", 1},
+		{"Rugrats 9x26x27 La fuente de la juventud", 9},
 	}
 
 	for _, tt := range tests {

@@ -415,17 +415,40 @@ var (
 
 	// singleSeasonRe captures the first Sxx token from a title.
 	singleSeasonRe = regexp.MustCompile(`(?i)S(\d{1,2})`)
+
+	// boundedSeasonRe is an Sxx token standing alone or before Exx, so audio
+	// tags like DTS5.1 are not read as a season.
+	boundedSeasonRe = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])s(\d{1,2})(?:e\d|[^a-z0-9]|$)`)
+	// crossSeasonRe is the 10x08 episode form, also 9x26x27 multi-episode.
+	crossSeasonRe = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(\d{1,2})x\d{2,3}(?:x\d{2,3})*(?:[^a-z0-9]|$)`)
+	// wordSeasonRe is "Season 6" / "Seasons 1-3"; group 1 is the plural
+	// marker, group 3 a range or list continuation.
+	wordSeasonRe = regexp.MustCompile(`(?i)(?:^|[^a-z])season(s?)[ ._-]*(\d{1,2})([ ._]*(?:-|to|&|and|,)[ ._]*\d{1,2})?`)
 )
 
 // extractSingleSeason returns the season number from the first Sxx token
 // in the title, or 0 if none found.
+//
+// It also reads the 10x08 and "Season 6" forms, which the season filter
+// previously let through for any requested season (measured: a season 9
+// search offered Season 1, 2, 6, 7 packs and a 10x08 episode). A word form
+// naming several seasons ("Seasons 1-3", "Season 1 & 2") returns 0 so the
+// pack is kept rather than wrongly dropped.
 func extractSingleSeason(title string) int {
-	m := singleSeasonRe.FindStringSubmatch(title)
-	if len(m) < 2 {
-		return 0
+	for _, re := range []*regexp.Regexp{boundedSeasonRe, crossSeasonRe} {
+		if m := re.FindStringSubmatch(title); len(m) >= 2 {
+			n, _ := strconv.Atoi(m[1])
+			return n
+		}
 	}
-	n, _ := strconv.Atoi(m[1])
-	return n
+	if m := wordSeasonRe.FindStringSubmatch(title); len(m) >= 4 {
+		if m[1] != "" || m[3] != "" {
+			return 0
+		}
+		n, _ := strconv.Atoi(m[2])
+		return n
+	}
+	return 0
 }
 
 // seriesReleaseMatchesQuery rejects a season-bearing release when its title
