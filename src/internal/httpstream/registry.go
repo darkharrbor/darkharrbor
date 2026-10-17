@@ -14,8 +14,12 @@ const (
 	backendConcurrency   = 4
 	startupProbeTimeout  = 5 * time.Second
 	startupWholeTimeout  = 12 * time.Second
-	searchBackendTimeout = 10 * time.Second
-	searchWholeTimeout   = 15 * time.Second
+	// An aggregator backend (AIOStreams) fans out to its own addons and only
+	// answers once its slowest addon returns or times out; a cold request was
+	// measured at 15-16s. Prowlarr allows ~100s per indexer call, so 25s/30s
+	// keeps those results instead of discarding a nearly-finished search.
+	searchBackendTimeout = 25 * time.Second
+	searchWholeTimeout   = 30 * time.Second
 )
 
 // HealthChecker is the optional protocol-specific health surface used by the
