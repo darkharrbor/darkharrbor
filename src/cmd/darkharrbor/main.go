@@ -5082,6 +5082,7 @@ func resolveSevenZipItem(
 	var manifest nntp.SevenZipManifest
 	var totalSize int64
 	var winner string
+	unsupported := ""
 	for _, name := range usenetOrder {
 		provider := nntpProviders[name]
 		if provider == nil {
@@ -5090,12 +5091,31 @@ func resolveSevenZipItem(
 		built, size, err := provider.BuildSevenZipManifestForItem(ctx, item.ID, parsedNZB)
 		if err != nil {
 			// Parser/acquisition errors may carry source-controlled identifiers.
-			// Keep the operational signal while withholding raw error text.
-			log.Warn("resolve7z: manifest build failed on provider", "provider", name)
+			// Keep the operational signal while withholding raw error text;
+			// only a fixed, content-determined reason is named.
+			reason := sevenZipUnsupportedReason(err)
+			logReason := reason
+			if logReason == "" {
+				logReason = "fetch_or_parse"
+			}
+			log.Warn("resolve7z: manifest build failed on provider", "provider", name, "reason", logReason)
+			if reason != "" {
+				// The archive itself cannot be streamed (compressed, solid,
+				// encrypted header, unusable volume layout). Every provider
+				// serves the same bytes, so stop here instead of retrying the
+				// whole provider ladder maxResolveAttempts times, 90 s apart.
+				unsupported = reason
+				break
+			}
 			continue
 		}
 		manifest, totalSize, winner = built, size, name
 		break
+	}
+	if winner == "" && unsupported != "" {
+		item.RetryCount = maxResolveAttempts - 1
+		scheduleResolveRetry(ctx, log, st, item, 0, "7z archive cannot be streamed: "+unsupported)
+		return
 	}
 	if winner == "" {
 		scheduleResolveRetry(ctx, log, st, item, 90*time.Second, "build 7z manifest failed on every configured provider")
@@ -7241,4 +7261,21 @@ func restartServerPID1(currentPID int, readlink func(string) (string, error), ki
 		return false, err
 	}
 	return true, nil
+}
+
+// sevenZipUnsupportedReason maps a 7z manifest error that the archive's own
+// structure determines (so no retry or other provider can fix it) to a
+// fixed reason; "" means possibly transient.
+func sevenZipUnsupportedReason(err error) string {
+	switch {
+	case errors.Is(err, archiveparser.ErrCompressed7z):
+		return "compressed"
+	case errors.Is(err, archiveparser.ErrSolid7z):
+		return "solid"
+	case errors.Is(err, archiveparser.ErrEncryptedHeader7z):
+		return "encrypted_header"
+	case errors.Is(err, nntp.ErrNoSevenZipVolumes), errors.Is(err, nntp.ErrAmbiguousSevenZipVolumes):
+		return "volume_layout"
+	}
+	return ""
 }
