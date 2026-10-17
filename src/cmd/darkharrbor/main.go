@@ -4138,13 +4138,17 @@ func pruneRemovedItems(ctx context.Context, log *slog.Logger, st *store.Store, w
 // was written (e.g. a multi-file NZB where only some files wrote before a
 // later one failed) — route through the same writer.Remove cleanup for
 // safety rather than assuming there's nothing to clean up.
+// failedReleaseRetryFor is how long a failed item whose provider transfer
+// could not be deleted is kept so the delete can be retried.
+const failedReleaseRetryFor = 24 * time.Hour
+
 // release, when non-nil, frees a failed item's provider transfer (TorBox
 // delete) before its row is deleted. Without it the failed row -- the only
 // record of the remote id -- vanished after FailedRetention (5 min), long
 // before the orphan-slot reclaimer's 30 min grace could see it, so every
 // failed uncached torrent kept an Allowed Active Slot until TorBox expired it
 // (measured 2026-10-17: 10/10 slots held by such orphans).
-func pruneFailedItems(ctx context.Context, log *slog.Logger, st *store.Store, writer output.Writer, retention time.Duration, release func(itemID string)) int64 {
+func pruneFailedItems(ctx context.Context, log *slog.Logger, st *store.Store, writer output.Writer, retention time.Duration, release func(itemID string) bool) int64 {
 	if retention <= 0 {
 		return 0
 	}
@@ -4172,7 +4176,17 @@ func pruneFailedItems(ctx context.Context, log *slog.Logger, st *store.Store, wr
 				log.Warn("prune: check shared remote id failed; keeping failed item for next cycle", "item_id", item.ID, "error", serr)
 				continue
 			case !shared:
-				release(item.ID)
+				if !release(item.ID) {
+					// Provider delete failed (e.g. a 429 hold or TorBox
+					// "download server offline"). The row holds the only
+					// copy of the remote id, so keep it and retry next
+					// cycle, up to failedReleaseRetryFor.
+					if time.Since(item.UpdatedAt) < failedReleaseRetryFor {
+						log.Warn("prune: provider release failed; keeping failed item for retry", "item_id", item.ID)
+						continue
+					}
+					log.Warn("prune: provider release still failing; deleting row (provider expires the transfer)", "item_id", item.ID, "retry_for", failedReleaseRetryFor)
+				}
 			}
 		}
 		cleanedIDs = append(cleanedIDs, item.ID)
@@ -4211,7 +4225,7 @@ func pruneFailedItems(ctx context.Context, log *slog.Logger, st *store.Store, wr
 // its own retry-prevention (blacklist) purposes, and every extra minute an
 // arr keeps showing it in the queue is a minute the person might mistake
 // for "still broken" instead of "already handled, will try something else."
-func runFailedPruneCycle(ctx context.Context, log *slog.Logger, st *store.Store, writer output.Writer, retention time.Duration, arrs []config.ArrTarget, release func(itemID string)) {
+func runFailedPruneCycle(ctx context.Context, log *slog.Logger, st *store.Store, writer output.Writer, retention time.Duration, arrs []config.ArrTarget, release func(itemID string) bool) {
 	n := pruneFailedItems(ctx, log, st, writer, retention, release)
 	if n > 0 {
 		notifyArrsRefresh(ctx, log, arrs)

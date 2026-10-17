@@ -4030,7 +4030,10 @@ func (s *Server) ResetJanitorTimer(itemID string, d time.Duration) {
 // window expires, then clears remote_id in the DB so the proxy re-materializes
 // on next play. Errors are logged and non-fatal — TorBox expires items itself
 // after 30 days if cleanup fails.
-func (s *Server) JanitorCleanup(itemID string) {
+// JanitorCleanup releases an item's provider transfer and clears its remote
+// id. It reports whether the provider delete succeeded (or there was nothing
+// to release), so a caller about to delete the row can keep it for a retry.
+func (s *Server) JanitorCleanup(itemID string) bool {
 	// Remove from timer map first so concurrent proxy hits can start a new timer.
 	s.janitorMu.Lock()
 	delete(s.janitorTimers, itemID)
@@ -4042,11 +4045,11 @@ func (s *Server) JanitorCleanup(itemID string) {
 	item, err := s.store.GetItemByID(ctx, itemID)
 	if err != nil {
 		s.log.Warn("janitor: get item failed", "item_id", itemID, "error", err)
-		return
+		return false
 	}
 	if item == nil || item.RemoteID == nil {
 		// Already cleaned up or never materialized.
-		return
+		return true
 	}
 
 	// BUGFIX 2026-07-01 (torbox API-hit audit / HANDOFF "what's next" #4,
@@ -4079,11 +4082,21 @@ func (s *Server) JanitorCleanup(itemID string) {
 		)
 		// Non-fatal: TorBox expires after 30 days. Clear remote_id anyway
 		// so Dark Harrbor re-materializes on next play (idempotent createtorrent).
+		// A failed item is never played again: keep its remote id so the
+		// failed-item pruner can retry the delete instead of orphaning it.
+		if item.State == store.StateFailed {
+			return false
+		}
 	}
 
 	item.RemoteID = nil
 	item.UpdatedAt = time.Now().UTC()
-	if uerr := s.store.UpdateItem(ctx, item); uerr != nil {
+	// Fresh context: the provider calls above may have used up ctx (a 429
+	// hold), and the remote id must still be cleared (measured: "clear
+	// remote_id: update item: context deadline exceeded").
+	uctx, ucancel := context.WithTimeout(s.shutdownCtx, 10*time.Second)
+	defer ucancel()
+	if uerr := s.store.UpdateItem(uctx, item); uerr != nil {
 		s.log.Warn("janitor: clear remote_id", "item_id", itemID, "error", uerr)
 	}
 	// Invalidate the resolve cache so the next /stream hit does a fresh resolve.
@@ -4096,7 +4109,9 @@ func (s *Server) JanitorCleanup(itemID string) {
 	s.log.Info("janitor: item cleaned up",
 		"item_id", itemID,
 		"display_name", item.DisplayName,
+		"provider_released", cleanErr == nil,
 	)
+	return cleanErr == nil
 }
 
 // ─── Magnet cache helpers ─────────────────────────────────────────────────────
