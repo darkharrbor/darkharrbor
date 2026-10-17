@@ -364,6 +364,19 @@ func main() {
 	prober := probe.New(log, cfg.Probe.Timeout)
 	writer := output.NewStrmWriter(cfg.Data.Strm, stagingRoot)
 	writer.SetStreamSecret(cfg.Server.StreamSecret)
+	// A release folder held by a terminal (removed/failed) or vanished item
+	// may be reclaimed by a live re-grab of the same release; a live owner
+	// still blocks (A-B14). Lookup errors keep the folder.
+	writer.SetOwnerLiveProbe(func(ctx context.Context, itemID string) (bool, error) {
+		owner, err := st.GetItemByID(ctx, itemID)
+		if err != nil {
+			return true, err
+		}
+		if owner == nil {
+			return false, nil
+		}
+		return owner.State != store.StateRemoved && owner.State != store.StateFailed, nil
+	})
 	if sidecars, sidecarErr := sidecar.New(st, sidecar.Options{}); sidecarErr != nil {
 		log.Error("sidecar registry unavailable", "error", sidecarErr)
 	} else {

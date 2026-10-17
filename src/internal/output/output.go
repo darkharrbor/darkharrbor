@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -58,6 +59,19 @@ type StrmWriter struct {
 	blobSink     StrmBlobSink
 	dataRoot     string
 	sidecars     *sidecar.Registry
+	// ownerLive reports whether the item that owns an existing finalDir is
+	// still live. nil keeps the strict A-B14 behaviour (never adopt).
+	ownerLive func(ctx context.Context, itemID string) (bool, error)
+}
+
+// SetOwnerLiveProbe lets Write reclaim a finalDir whose owning item is
+// terminal (removed/failed) or no longer exists. Without it, a re-grab of
+// the same release under a new item id was refused forever with
+// "finalDir collision" while the folder only held the dead item's .strm
+// files (2026-10-17: 53 items / 7 SpongeBob pack folders, all owned by
+// items in state "removed").
+func (w *StrmWriter) SetOwnerLiveProbe(fn func(ctx context.Context, itemID string) (bool, error)) {
+	w.ownerLive = fn
 }
 
 func NewStrmWriter(strmRoot, stagingRoot string) *StrmWriter {
@@ -455,10 +469,24 @@ func (w *StrmWriter) Write(ctx context.Context, item *store.Item, files []provid
 			// means two items share the same sanitized DisplayName (collision)
 			// and silently adopting the directory would cross-wire stream URLs.
 			if err := verifyFinalDirOwnership(finalDir, item.ID); err != nil {
+				var coll *finalDirCollisionError
+				if !errors.As(err, &coll) || !w.ownerIsDead(ctx, coll.owner) {
+					_ = os.RemoveAll(stagingDir)
+					return "", err
+				}
+				// The folder belongs to a dead item: replace it with this
+				// item's freshly staged copy.
+				if rmErr := os.RemoveAll(finalDir); rmErr != nil {
+					_ = os.RemoveAll(stagingDir)
+					return "", fmt.Errorf("output: reclaim stale finalDir %s: %w", finalDir, rmErr)
+				}
+				if rnErr := os.Rename(stagingDir, finalDir); rnErr != nil {
+					_ = os.RemoveAll(stagingDir)
+					return "", fmt.Errorf("output: rename staging to reclaimed final %s: %w", finalDir, rnErr)
+				}
+			} else {
 				_ = os.RemoveAll(stagingDir)
-				return "", err
 			}
-			_ = os.RemoveAll(stagingDir)
 		} else if err := os.Rename(stagingDir, finalDir); err != nil {
 			_ = os.RemoveAll(stagingDir)
 			return "", fmt.Errorf("output: rename staging to final %s: %w", finalDir, err)
@@ -964,7 +992,7 @@ func verifyFinalDirOwnership(dir, itemID string) error {
 		if strings.Contains(string(data), marker) {
 			return nil // confirmed this item's directory
 		}
-		return fmt.Errorf("output: finalDir collision: %s exists but belongs to a different item (expected marker %q)", dir, marker)
+		return &finalDirCollisionError{dir: dir, marker: marker, owner: streamOwnerID(string(data))}
 	}
 	// No .strm files found yet — treat as ours (empty dir from a prior partial publish).
 	return nil
@@ -1016,3 +1044,36 @@ func SeasonFromName(name string) int {
 
 // seasonCapturePattern captures the season digits of a standard SxxExx token.
 var seasonCapturePattern = regexp.MustCompile(`(?i)[Ss](\d{1,2})[Ee]\d{1,2}`)
+
+// finalDirCollisionError is returned when finalDir holds another item's
+// .strm files. owner is that item's id when it can be read from the URL.
+type finalDirCollisionError struct {
+	dir, marker, owner string
+}
+
+func (e *finalDirCollisionError) Error() string {
+	return fmt.Sprintf("output: finalDir collision: %s exists but belongs to a different item (expected marker %q)", e.dir, e.marker)
+}
+
+// streamOwnerID extracts the item id from a ".../stream/<id>/..." URL.
+func streamOwnerID(content string) string {
+	_, rest, ok := strings.Cut(content, "/stream/")
+	if !ok {
+		return ""
+	}
+	id, _, ok := strings.Cut(rest, "/")
+	if !ok || id == "" {
+		return ""
+	}
+	return id
+}
+
+// ownerIsDead is true only when the probe positively reports the owner as
+// not live. Unknown owner, no probe, or a probe error all keep the folder.
+func (w *StrmWriter) ownerIsDead(ctx context.Context, owner string) bool {
+	if w.ownerLive == nil || owner == "" {
+		return false
+	}
+	live, err := w.ownerLive(ctx, owner)
+	return err == nil && !live
+}

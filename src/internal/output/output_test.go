@@ -767,3 +767,67 @@ func TestRemoveCommittedDeletesSingleStrmAndAuthority(t *testing.T) {
 		t.Fatalf("deleted authority for %q", sink.deleted)
 	}
 }
+
+// Regression 2026-10-17: a re-grab of a release whose folder is still held by
+// a dead (removed/failed) item was refused forever with "finalDir collision".
+func TestWrite_SeasonPack_FinalDirOwnedByDeadItemIsReclaimed(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		live      bool
+		probeErr  error
+		wantError bool
+	}{
+		{"dead owner reclaimed", false, nil, false},
+		{"live owner still refused", true, nil, true},
+		{"probe error keeps folder", false, os.ErrPermission, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w, strmRoot := newTestWriter(t)
+			item := testItem()
+			const owner = "deadbeefdeadbeefdeadbeefdeadbeef"
+			var asked string
+			w.SetOwnerLiveProbe(func(_ context.Context, id string) (bool, error) {
+				asked = id
+				return tc.live, tc.probeErr
+			})
+			finalDir := filepath.Join(strmRoot, item.Category, item.DisplayName)
+			if err := os.MkdirAll(finalDir, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			stale := filepath.Join(finalDir, "stale.strm")
+			if err := os.WriteFile(stale, []byte("http://darkharrbor:8381/stream/"+owner+"/1"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := w.Write(context.Background(), item, seasonPackFiles(), "http://darkharrbor:8381", nil)
+			if asked != owner {
+				t.Fatalf("probe asked about %q, want %q", asked, owner)
+			}
+			if tc.wantError {
+				if err == nil || !strings.Contains(err.Error(), "collision") {
+					t.Fatalf("want collision error, got %v", err)
+				}
+				if _, statErr := os.Stat(stale); statErr != nil {
+					t.Fatal("folder must be left untouched when not reclaimable")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Write: %v", err)
+			}
+			if _, statErr := os.Stat(stale); !os.IsNotExist(statErr) {
+				t.Fatal("dead owner's .strm should be gone after reclaim")
+			}
+			entries, _ := os.ReadDir(finalDir)
+			found := false
+			for _, e := range entries {
+				b, _ := os.ReadFile(filepath.Join(finalDir, e.Name()))
+				if strings.Contains(string(b), "/stream/"+item.ID+"/") {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("reclaimed folder does not contain this item's .strm files")
+			}
+		})
+	}
+}
