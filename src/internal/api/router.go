@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"mime/multipart"
 	"net/http"
+	"net/http/pprof"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -953,6 +954,16 @@ func (s *Server) Router() http.Handler {
 		mux.Handle("/metrics", getOnly(http.HandlerFunc(s.handleMetrics)))
 	}
 	mux.Handle("/api/v1/error-journal/{item_id}", getOnly(http.HandlerFunc(s.handleErrorJournal)))
+	// Opt-in Go runtime profiling on the primary (arr-network) listener only,
+	// for memory/goroutine investigation. Never registered on the 8382
+	// client listener. Off unless HARRBOR_DEBUG_PPROF=true.
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("HARRBOR_DEBUG_PPROF")), "true") {
+		mux.HandleFunc("/debug/pprof/", pprof.Index)
+		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	}
 
 	// OBS-02: ladder dry-run "explain this item" debug endpoint. Read-only;
 	// never moves media bytes or contacts a provider.

@@ -2485,6 +2485,9 @@ import can hammer it — so every bound here exists to contain that.
 
 - **`HARRBOR_METRICS_ENABLED`** — default `true`
   Serves the Prometheus `/metrics` endpoint.
+- **`HARRBOR_DEBUG_PPROF`** — default `false` (environment only)
+  Serves Go's `/debug/pprof/` profiles on the primary listener (never on the
+  client listener). For memory/goroutine investigation; leave off otherwise.
 - **`HARRBOR_ERRORJOURNAL_MAX_ENTRIES`** — default `20`
   Entries kept in the error journal surfaced by `/healthz`.
 - **`HARRBOR_IDENTITY_STRICTNESS`** — default `warn`
