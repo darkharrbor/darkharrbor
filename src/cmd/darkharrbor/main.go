@@ -5062,7 +5062,8 @@ func resolveSevenZipItem(
 	rn *readyNotifier,
 	checkIdentity func(context.Context, *store.Item, int, int, *mediatruth.Facts),
 ) {
-	log = log.With("item_id", item.ID, "display_name", item.DisplayName)
+	// item_id/display_name are already bound by resolveNZBItem, the only
+	// caller; re-binding them repeated both attributes on every line.
 	var manifest nntp.SevenZipManifest
 	var totalSize int64
 	var winner string
@@ -5185,7 +5186,8 @@ func resolveRARItem(
 	nntpExpSvc *experience.Service,
 	checkIdentity func(context.Context, *store.Item, int, int, *mediatruth.Facts),
 ) {
-	log = log.With("item_id", item.ID, "display_name", item.DisplayName)
+	// item_id/display_name are already bound by resolveNZBItem, the only
+	// caller; re-binding them repeated both attributes on every line.
 
 	if parsedNZB.Password == "" {
 		parsedNZB.Password = item.Metadata.Password
