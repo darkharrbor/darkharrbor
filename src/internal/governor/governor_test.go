@@ -129,8 +129,13 @@ func TestAllow_SlotHeadroom_Exhausted(t *testing.T) {
 		ActiveCount:        10,
 	}}})
 
-	if err := g.Allow(context.Background()); err == nil {
+	err := g.Allow(context.Background())
+	if err == nil {
 		t.Fatal("Allow: expected no-headroom error, got nil")
+	}
+	// Full slots are transient: the submit path must defer, not fail.
+	if !provider.IsRetryable(err) {
+		t.Fatalf("Allow: no-headroom error must be retryable, got %v", err)
 	}
 }
 

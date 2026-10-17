@@ -2106,14 +2106,21 @@ func submitItem(
 	// Walk lanes independently. Each lane's gate makes its own oracle +
 	// governor decision. We stop at the first lane that both accepts the
 	// item AND successfully submits it to the provider.
-	var lastGateErr error
+	var lastReason string
+	var retryable bool
 	for _, lane := range lanes {
-		accepted, resp := submitViaLane(ctx, log, lane, st, item)
+		accepted, resp, rejectErr := submitViaLane(ctx, log, lane, st, item)
+		if errors.Is(rejectErr, errSubmitRescheduled) {
+			// Retryable createtask error: submitViaLane already set the
+			// backoff. Failing the item here (as before) discarded it.
+			return
+		}
 		if !accepted {
-			// Gate rejected — try next lane. lastGateErr captures the most
-			// recent rejection reason for the final-failure message.
-			if lastGateErr == nil {
-				lastGateErr = fmt.Errorf("all lanes rejected: %s gate rejected", lane.prov.Name())
+			if rejectErr != nil {
+				lastReason = lane.prov.Name() + ": " + httpstream.Sanitize(rejectErr)
+				if provider.IsRetryable(rejectErr) {
+					retryable = true
+				}
 			}
 			continue
 		}
@@ -2124,25 +2131,62 @@ func submitItem(
 		}
 
 		// Success: bind item to this lane's provider and persist.
+		if item.ErrorMessage != nil && strings.HasPrefix(*item.ErrorMessage, "waiting: ") {
+			item.ErrorMessage = nil
+		}
 		persistSubmitResult(ctx, log, lane.prov, lane.gov, st, item, resp)
 		return
 	}
 
-	// All lanes rejected. If any rejection was retryable (governor budget
-	// exhausted, slot full), schedule a retry rather than permanently failing.
-	// If all rejections are hard (non-retryable gate errors), fail permanently.
-	if lastGateErr != nil {
-		log.Warn("submit: all provider lanes rejected",
-			"item_id", item.ID,
-			"display_name", item.DisplayName,
-			"error", lastGateErr,
-		)
-		msg := lastGateErr.Error()
-		item.ErrorMessage = &msg
-		if err := st.UpdateItemState(ctx, item, store.StateFailed, msg); err != nil {
-			log.Error("submit: persist all-lanes-rejected failed state", "item_id", item.ID, "error", err)
-		}
+	// All lanes rejected. A transient rejection (slots full, provider
+	// cooldown) reschedules with backoff, bounded by maxSubmitDeferrals;
+	// anything else, or an exhausted bound, fails the item with the reason.
+	if retryable && deferSubmitItem(ctx, log, st, item, lastReason) {
+		return
 	}
+	msg := "all provider lanes rejected"
+	if lastReason != "" {
+		msg += " (last: " + lastReason + ")"
+	}
+	log.Warn("submit: all provider lanes rejected",
+		"item_id", item.ID,
+		"display_name", item.DisplayName,
+		"last_reason", lastReason,
+	)
+	item.ErrorMessage = &msg
+	if err := st.UpdateItemState(ctx, item, store.StateFailed, msg); err != nil {
+		log.Error("submit: persist all-lanes-rejected failed state", "item_id", item.ID, "error", err)
+	}
+}
+
+// errSubmitRescheduled is returned by submitViaLane when a retryable
+// createtask error has already scheduled the item's next attempt.
+var errSubmitRescheduled = errors.New("submit rescheduled")
+
+// maxSubmitDeferrals bounds rescheduling of a submit refused for a
+// transient reason: 30 s doubling to a 10 min cap, 12 tries (~85 min).
+// Mirrors api.maxSubmitDeferrals for the inline submit path.
+const maxSubmitDeferrals = 12
+
+func deferSubmitItem(ctx context.Context, log *slog.Logger, st *store.Store, item *store.Item, reason string) bool {
+	if item.RetryCount >= maxSubmitDeferrals {
+		return false
+	}
+	delay := 30 * time.Second << item.RetryCount
+	if delay > 10*time.Minute || delay <= 0 {
+		delay = 10 * time.Minute
+	}
+	next := time.Now().Add(delay)
+	item.NextRunAt = &next
+	item.RetryCount++
+	msg := "waiting: " + reason
+	item.ErrorMessage = &msg
+	if err := st.UpdateItem(ctx, item); err != nil {
+		log.Error("submit: persist deferral failed", "item_id", item.ID, "error", err)
+		return false
+	}
+	log.Info("submit: deferred (transient refusal)", "item_id", item.ID, "reason", reason, "attempt", item.RetryCount, "next_in", delay)
+	return true
 }
 
 // submitViaLane attempts submission through one provider lane.
@@ -2157,7 +2201,7 @@ func submitViaLane(
 	lane providerLane,
 	st *store.Store,
 	item *store.Item,
-) (accepted bool, resp *provider.CreateTaskResponse) {
+) (accepted bool, resp *provider.CreateTaskResponse, rejectErr error) {
 	provName := lane.prov.Name()
 	llog := log.With("item_id", item.ID, "display_name", item.DisplayName, "provider", provName)
 
@@ -2165,7 +2209,7 @@ func submitViaLane(
 	result, gateErr := lane.gate.Check(ctx, item)
 	if gateErr != nil {
 		llog.Debug("submit: lane gate rejected", "error", gateErr)
-		return false, nil // not accepted by this lane; caller tries next
+		return false, nil, gateErr // not accepted by this lane; caller tries next
 	}
 
 	llog.Info("submit: cachegate passed", "cached", result.Cached)
@@ -2185,7 +2229,7 @@ func submitViaLane(
 			if err := st.UpdateItem(ctx, item); err != nil {
 				log.Error("submit: persist retry state", "item_id", item.ID, "error", err)
 			}
-			return false, nil
+			return false, nil, errSubmitRescheduled
 		}
 		// Non-retryable (DMCA block, auth failure, etc.): fail the item.
 		msg := submitErr.Error()
@@ -2193,7 +2237,7 @@ func submitViaLane(
 		if err := st.UpdateItemState(ctx, item, store.StateFailed, msg); err != nil {
 			log.Error("submit: persist non-retryable failed state", "item_id", item.ID, "error", err)
 		}
-		return true, nil // accepted by gate; submit failed non-retryably; stop walking
+		return true, nil, nil // accepted by gate; submit failed non-retryably; stop walking
 	}
 
 	// Record uncached add against this lane's governor budget.
@@ -2203,7 +2247,7 @@ func submitViaLane(
 		}
 	}
 
-	return true, provResp
+	return true, provResp, nil
 }
 
 // isRetryableSubmitError reports whether a provider submit error is transient

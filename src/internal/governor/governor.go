@@ -70,16 +70,18 @@ func (g *Governor) Allow(ctx context.Context) error {
 
 	status, err := g.prov.SlotStatus(ctx)
 	if err != nil {
-		return fmt.Errorf("governor: slot status: %w", err)
+		return provider.MarkRetryable(fmt.Errorf("governor: slot status: %w", err))
 	}
 
 	if status.FreeTier && !status.CooldownUntil.IsZero() && time.Now().UTC().Before(status.CooldownUntil) {
-		return fmt.Errorf("governor: provider cooldown active until %s", status.CooldownUntil.Format(time.RFC3339))
+		return provider.MarkRetryable(fmt.Errorf("governor: provider cooldown active until %s", status.CooldownUntil.Format(time.RFC3339)))
 	}
 
 	headroom := status.AllowedActiveSlots - status.ActiveCount
 	if headroom <= 0 {
-		return fmt.Errorf("governor: no active slots available (%d/%d in use)", status.ActiveCount, status.AllowedActiveSlots)
+		// Full slots are a wait, not a verdict on the release: slots free as
+		// other transfers finish or are reclaimed. Callers retry with backoff.
+		return provider.MarkRetryable(fmt.Errorf("governor: no active slots available (%d/%d in use)", status.ActiveCount, status.AllowedActiveSlots))
 	}
 
 	if status.FreeTier {

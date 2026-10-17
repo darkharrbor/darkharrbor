@@ -2432,6 +2432,11 @@ func (s *Server) submitItemDirect(ctx context.Context, item *store.Item, gateRes
 		return
 	}
 
+	// lastReason is the last lane's rejection, surfaced on the item when every
+	// lane refuses -- previously the per-lane reason was DEBUG-only and the
+	// failed item said only that "all lanes rejected".
+	var lastReason string
+	var gateRetryable bool
 	for i, lane := range s.lanes {
 		var result *cachegate.Result
 
@@ -2443,6 +2448,10 @@ func (s *Server) submitItemDirect(ctx context.Context, item *store.Item, gateRes
 			result, gateErr = lane.Gate.Check(ctx, item)
 			if gateErr != nil {
 				log.Debug("submit: lane gate rejected", "provider", lane.Prov.Name(), "error", gateErr)
+				lastReason = lane.Prov.Name() + ": " + httpstream.Sanitize(gateErr)
+				if provider.IsRetryable(gateErr) {
+					gateRetryable = true
+				}
 				continue // try next lane
 			}
 		}
@@ -2462,6 +2471,7 @@ func (s *Server) submitItemDirect(ctx context.Context, item *store.Item, gateRes
 
 		if submitErr != nil {
 			log.Warn("submit: provider createtask failed", "provider", lane.Prov.Name(), "error", submitErr)
+			lastReason = lane.Prov.Name() + ": " + httpstream.Sanitize(submitErr)
 			if provider.IsRetryable(submitErr) {
 				// Retryable: back off and do not try other lanes.
 				next := time.Now().Add(30 * time.Second)
@@ -2486,6 +2496,7 @@ func (s *Server) submitItemDirect(ctx context.Context, item *store.Item, gateRes
 		// Bind the item to this provider and persist.
 		provName := lane.Prov.Name()
 		item.Provider = &provName
+		clearDeferralMessage(item)
 		if !s.persistSubmitResultOrFailLoudly(ctx, log, item, resp, result.Cached) {
 			return
 		}
@@ -2498,12 +2509,57 @@ func (s *Server) submitItemDirect(ctx context.Context, item *store.Item, gateRes
 		return
 	}
 
+	// A lane refused only for a transient reason (slots full, cooldown):
+	// wait and try again rather than failing a good release.
+	if gateRetryable && s.deferSubmit(ctx, log, item, lastReason) {
+		return
+	}
+
 	// All lanes failed non-retryably.
 	msg := "all debrid provider lanes rejected or failed non-retryably"
-	log.Warn("submit: "+msg, "item_id", item.ID)
+	if lastReason != "" {
+		msg += " (last: " + lastReason + ")"
+	}
+	log.Warn("submit: all debrid provider lanes rejected or failed non-retryably", "last_reason", lastReason)
 	item.ErrorMessage = &msg
 	if err := s.store.UpdateItemState(ctx, item, store.StateFailed, msg); err != nil {
 		log.Error("submit: persist all-lanes-failed state", "error", err)
+	}
+}
+
+// maxSubmitDeferrals bounds how often a submit waiting on a transient gate
+// refusal is rescheduled: 30 s doubling to a 10 min cap, 12 tries (~85 min).
+const maxSubmitDeferrals = 12
+
+// deferSubmit reschedules a submit refused for a transient reason (governor
+// slots full, provider cooldown). It returns false once the bound is spent,
+// and the caller then fails the item as before.
+func (s *Server) deferSubmit(ctx context.Context, log *slog.Logger, item *store.Item, reason string) bool {
+	if item.RetryCount >= maxSubmitDeferrals {
+		return false
+	}
+	delay := 30 * time.Second << item.RetryCount
+	if delay > 10*time.Minute || delay <= 0 {
+		delay = 10 * time.Minute
+	}
+	next := time.Now().Add(delay)
+	item.NextRunAt = &next
+	item.RetryCount++
+	msg := "waiting: " + reason
+	item.ErrorMessage = &msg
+	if err := s.store.UpdateItem(ctx, item); err != nil {
+		log.Error("submit: persist deferral failed", "error", err)
+		return false
+	}
+	log.Info("submit: deferred (transient refusal)", "reason", reason, "attempt", item.RetryCount, "next_in", delay)
+	return true
+}
+
+// clearDeferralMessage drops a "waiting: ..." note left by deferSubmit once
+// the submit goes through.
+func clearDeferralMessage(item *store.Item) {
+	if item.ErrorMessage != nil && strings.HasPrefix(*item.ErrorMessage, "waiting: ") {
+		item.ErrorMessage = nil
 	}
 }
 
@@ -2523,6 +2579,9 @@ func (s *Server) submitItemDirectSingle(ctx context.Context, log *slog.Logger, i
 		var err error
 		result, err = s.gate.Check(ctx, item)
 		if err != nil {
+			if provider.IsRetryable(err) && s.deferSubmit(ctx, log, item, httpstream.Sanitize(err)) {
+				return
+			}
 			log.Warn("submit: cachegate rejected", "error", err)
 			msg := err.Error()
 			item.ErrorMessage = &msg
@@ -2559,6 +2618,7 @@ func (s *Server) submitItemDirectSingle(ctx context.Context, log *slog.Logger, i
 			log.Warn("submit: governor record failed (non-fatal)", "error", recordErr)
 		}
 	}
+	clearDeferralMessage(item)
 	if !s.persistSubmitResultOrFailLoudly(ctx, log, item, resp, result.Cached) {
 		return
 	}
