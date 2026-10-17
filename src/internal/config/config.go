@@ -628,6 +628,12 @@ type Config struct {
 		ReadaheadEnabled bool
 		// ReadaheadMaxSegments is the exponential window cap for prefetch.
 		ReadaheadMaxSegments int
+		// ReadaheadMaxMB bounds the readahead window of ONE stream session in
+		// declared bytes, independent of chunk size. ReadaheadMaxSegments alone
+		// is unit-less: 128 segments is ~90 MB of NNTP articles but 2 GB of
+		// 16 MB CDN windows, and every prefetched chunk is held in RAM until
+		// the write loop consumes it. <=0 disables the byte cap.
+		ReadaheadMaxMB int64
 		// MinBufferSegments is how many segments to prefetch before starting playback.
 		MinBufferSegments int
 		// TailEvict evicts readahead buffer entries behind the lookback window.
@@ -952,6 +958,7 @@ func defaultConfig() Config {
 	cfg.Cache.ReadaheadConnections = 8
 	cfg.Cache.ReadaheadEnabled = true
 	cfg.Cache.ReadaheadMaxSegments = 16
+	cfg.Cache.ReadaheadMaxMB = 256
 	cfg.Cache.MinBufferSegments = 4
 	cfg.Cache.TailEvict = true
 	cfg.Cache.TailLookback = 4
@@ -1256,6 +1263,7 @@ func applyEnv(cfg *Config) {
 	}{
 		{"HARRBOR_DISK_CACHE_SIZE_MB", &cfg.Cache.DiskCacheSizeMB},
 		{"HARRBOR_PINNED_BUDGET_MB", &cfg.Cache.PinnedBudgetMB},
+		{"HARRBOR_READAHEAD_MAX_MB", &cfg.Cache.ReadaheadMaxMB},
 		{"HARRBOR_NNTP_PREWARM_BYTES", &cfg.Prewarm.NNTPBytes},
 		{"HARRBOR_PREWARM_HOTHEAD_MB", &cfg.Prewarm.HotHeadMB},
 	} {

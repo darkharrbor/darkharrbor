@@ -30,6 +30,7 @@ var tuningKeys = map[string]bool{
 	"HARRBOR_FULL_EVICT_MODE":                   true,
 	"HARRBOR_FULL_EVICT_TTL_MIN":                true,
 	"HARRBOR_READAHEAD_MAX_SEGMENTS":            true,
+	"HARRBOR_READAHEAD_MAX_MB":                  true,
 	"HARRBOR_STREAM_CHUNK_SIZE_MB":              true,
 	"HARRBOR_STREAM_MIN_BUFFER_SEGMENTS":        true,
 	"HARRBOR_STREAM_READAHEAD_WORKERS":          true,
@@ -443,6 +444,9 @@ func applyTuning(cfg *Config, values map[string]string) {
 	}
 	if value, ok := tuningInt(values, "HARRBOR_READAHEAD_MAX_SEGMENTS"); ok {
 		cfg.Cache.ReadaheadMaxSegments = value
+	}
+	if value, ok := tuningInt(values, "HARRBOR_READAHEAD_MAX_MB"); ok {
+		cfg.Cache.ReadaheadMaxMB = int64(value)
 	}
 	if value, ok := tuningInt(values, "HARRBOR_STREAM_CHUNK_SIZE_MB"); ok {
 		cfg.Cache.StreamChunkSizeMB = value

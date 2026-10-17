@@ -1651,7 +1651,9 @@ Per-provider settings use the pattern `HARRBOR_PROVIDER_<NAME>_*`:
 | `HARRBOR_PROVIDER_<N>_MAX_CONNS_PER_FILE` | unset = uncapped | Per-file demand concurrency cap. Left unset, there is no per-file limit at all -- `16` is only the value `darkharrbor configure` suggests interactively if you touch this setting (capped at the provider's own demand-connection count), not a silent runtime default |
 
 `HARRBOR_READAHEAD_MAX_SEGMENTS` is the runtime readahead-window control for all
-providers. The legacy Newshosting-specific
+providers. It counts chunks, whose size depends on the source (an NNTP article is
+under 1 MB, a CDN stream window is `HARRBOR_STREAM_CHUNK_SIZE_MB`), so
+`HARRBOR_READAHEAD_MAX_MB` additionally caps each stream's window in bytes. The legacy Newshosting-specific
 `HARRBOR_PROVIDER_NEWSHOSTING_READAHEAD_MAX_SEGMENTS` is read only as a seed when
 `darkharrbor configure` imports old configuration; it is not a runtime
 per-provider setting. Configure auto-calculates the 60/40 demand/readahead split
@@ -1680,6 +1682,7 @@ size budget under separate namespaces.
 | `HARRBOR_STREAM_MIN_BUFFER_SEGMENTS` | `2` | Segments buffered before first byte emitted |
 | `HARRBOR_STREAM_READAHEAD_WORKERS` | `1` | CDN readahead parallelism (keep at 1 to avoid 429s) |
 | `HARRBOR_READAHEAD_MAX_SEGMENTS` | `16` | Global readahead window |
+| `HARRBOR_READAHEAD_MAX_MB` | `256` | Per-stream RAM bound on the readahead window. Prefetched chunks are held in memory until played, so the window is narrowed to this many MB for large-chunk sources (16 MB CDN windows: 16 chunks). Peak readahead RAM is roughly this value times concurrent streams. `0` disables the cap |
 | `HARRBOR_NNTP_CROSSLANE_SPLICE` | `false` | Proof-gated cross-lane recovery and durable owned-route admission across NNTP, torrent, and HTTP; not required for ordinary playback capture/commit |
 
 ### Performance profiles, exact values

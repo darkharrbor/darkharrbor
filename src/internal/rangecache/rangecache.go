@@ -199,6 +199,12 @@ type SteadyWorkerRecommender interface {
 type Config struct {
 	ReadaheadEnabled     bool
 	ReadaheadMaxSegments int
+	// ReadaheadMaxBytes caps one session's prefetch window in declared bytes
+	// (window x largest ChunkRef.Size), on top of ReadaheadMaxSegments. Prefetched
+	// chunks live in RAM until consumed, so without it a 16 MB-chunk CDN
+	// source with a 128-segment window pins 2 GB per session. The window
+	// always admits at least one chunk. <=0 disables the byte cap.
+	ReadaheadMaxBytes int64
 	// ReadaheadWorkers: parallel prefetch goroutines. Default 1; set to raPool size for max throughput.
 	ReadaheadWorkers  int
 	MinBufferSegments int
@@ -250,8 +256,15 @@ type readaheadSession struct {
 	// touch decays it back to steady once widenUntil has passed. All reads/
 	// writes use atomic ops so readaheadGoroutine never needs sess.mu to check
 	// its own gate.
-	ceiling     int32
-	steady      int32
+	ceiling int32
+	steady  int32
+	// ahead is this session's prefetch window in chunks: ReadaheadMaxSegments
+	// narrowed by ReadaheadMaxBytes for the source's chunk size (see
+	// readaheadWindow), or ProbeReadaheadSegments while only probe requests
+	// (WithProbe) have touched the session. Atomic: the first real playback
+	// request widens a probe-opened session to full.
+	ahead       atomic.Int32
+	fullAhead   int32
 	activeLimit atomic.Int32
 	widenUntil  atomic.Int64 // unix nano deadline; 0 = not currently widened
 }
@@ -628,12 +641,17 @@ func (c *Cache) stream(
 		if sess == nil {
 			sessCtx, sessCancel := context.WithCancel(c.sweeperCtx)
 			sess = &readaheadSession{
-				cancel:   sessCancel,
-				buf:      make(map[int][]byte),
-				claimed:  make(map[int]bool),
-				refs:     refs,
-				work:     work,
-				lastUsed: c.now(),
+				cancel:    sessCancel,
+				buf:       make(map[int][]byte),
+				claimed:   make(map[int]bool),
+				refs:      refs,
+				work:      work,
+				lastUsed:  c.now(),
+				fullAhead: int32(c.readaheadWindow(refs)),
+			}
+			sess.ahead.Store(sess.fullAhead)
+			if isProbe(ctx) && sess.fullAhead > ProbeReadaheadSegments {
+				sess.ahead.Store(ProbeReadaheadSegments)
 			}
 			sess.headCond = sync.NewCond(&sess.mu)
 			atomic.StoreInt64(&sess.writePos, int64(work[0]))
@@ -698,15 +716,18 @@ func (c *Cache) stream(
 				sess.activeLimit.Store(sess.steady)
 				sess.widenUntil.Store(0)
 			}
-			// Seek flush: if the read head jumped more than ReadaheadMaxSegments,
+			// Seek flush: if the read head jumped more than the session window,
 			// the buffered chunks are for the wrong region. Evict only chunks
-			// that are outside the new window [newHead, newHead+ReadaheadMaxSegments].
+			// that are outside the new window [newHead, newHead+the session window].
 			// Critically: always keep chunk 0 — Jellyfin re-probes the file header
 			// (byte offset 0) on every seek attempt before committing to the target
 			// position. Evicting chunk 0 guarantees a cold header fetch on every
 			// seek which causes the probe-and-reset loop.
-			if seekDelta > int64(c.cfg.ReadaheadMaxSegments) {
-				newWindowEnd := newHead + int64(c.cfg.ReadaheadMaxSegments)
+			if !isProbe(ctx) {
+				sess.ahead.Store(sess.fullAhead)
+			}
+			if ahead := int64(sess.ahead.Load()); seekDelta > ahead {
+				newWindowEnd := newHead + ahead
 				for k := range sess.buf {
 					if k == 0 {
 						continue // always keep the header chunk
@@ -1367,7 +1388,7 @@ func (c *Cache) sessionReaper(key string, sess *readaheadSession) {
 
 // readaheadGoroutine prefetches chunks ahead of the live read position into
 // the session buffer and follows that position across sequential reads and
-// seeks. It keeps at most ReadaheadMaxSegments chunks prefetched ahead of the
+// seeks. It keeps at most sess.ahead chunks prefetched ahead of the
 // read head and idles once caught up, so a probe-then-disconnect never pulls
 // the whole file. Unlike the prior implementation it does NOT terminate at the
 // end of any single request's range: the session is per-file and outlives
@@ -1388,10 +1409,6 @@ func (c *Cache) readaheadGoroutine(
 	myIndex int32, // NS-5.5: this goroutine's fixed ordinal (0..ceiling-1)
 ) {
 	n := len(refs)
-	ahead := c.cfg.ReadaheadMaxSegments
-	if ahead < 1 {
-		ahead = 1
-	}
 	// BUGFIX 2026-07-01 (torbox API-hit / playback-area audit): found by
 	// tracing the exact "TorBox CDN outage -> Jellyfin loops" incident
 	// already documented in REDESIGN S14. cdnChunkSource.Fetch issues a
@@ -1433,6 +1450,10 @@ func (c *Cache) readaheadGoroutine(
 		// always, so this check is always true and every goroutine is
 		// always active -- the exact pre-NS-5.5 behavior.
 		target := -1
+		ahead := int(sess.ahead.Load())
+		if ahead < 1 {
+			ahead = 1
+		}
 		if myIndex < sess.activeLimit.Load() {
 			// Prefetch the lowest not-yet-buffered chunk in the bounded window
 			// (head, head+ahead], clamped to EOF. The current chunk (head) is
@@ -1505,6 +1526,56 @@ func (c *Cache) readaheadGoroutine(
 		}
 		readaheadMu.Unlock()
 	}
+}
+
+// ProbeReadaheadSegments is the readahead window, in chunks, of a session
+// opened by a probe request (WithProbe). ffprobe reads the container header
+// and a little of the stream; with a full window every probe of an arr
+// season-pack import prefetched hundreds of MB into RAM.
+const ProbeReadaheadSegments = 2
+
+type probeCtxKey struct{}
+
+// WithProbe marks ctx as a metadata probe (ffprobe via the relay), not
+// playback; Stream then opens new sessions with a small readahead window.
+func WithProbe(ctx context.Context) context.Context {
+	return context.WithValue(ctx, probeCtxKey{}, true)
+}
+
+func isProbe(ctx context.Context) bool {
+	v, _ := ctx.Value(probeCtxKey{}).(bool)
+	return v
+}
+
+// readaheadWindow returns the prefetch window, in chunks, for a session over
+// refs: ReadaheadMaxSegments, narrowed so the window's declared bytes (sized
+// by the largest chunk) stay within ReadaheadMaxBytes. Prefetched chunks are
+// held in RAM until the write loop consumes them, so this is the per-session
+// memory bound. Always at least 1.
+func (c *Cache) readaheadWindow(refs []ChunkRef) int {
+	ahead := c.cfg.ReadaheadMaxSegments
+	if ahead < 1 {
+		ahead = 1
+	}
+	if c.cfg.ReadaheadMaxBytes <= 0 {
+		return ahead
+	}
+	var maxChunk int64
+	for _, r := range refs {
+		if r.Size > maxChunk {
+			maxChunk = r.Size
+		}
+	}
+	if maxChunk <= 0 {
+		return ahead
+	}
+	if byBytes := int(c.cfg.ReadaheadMaxBytes / maxChunk); byBytes < ahead {
+		ahead = byBytes
+	}
+	if ahead < 1 {
+		ahead = 1
+	}
+	return ahead
 }
 
 // readaheadPrefetchBackoff returns the delay before retrying a readahead

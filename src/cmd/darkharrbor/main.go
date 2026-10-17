@@ -183,6 +183,9 @@ func main() {
 
 	level := configuredLogLevel(cfg)
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+	if soft := applyCgroupMemoryLimit(); soft > 0 {
+		log.Info("memory: soft limit set from container limit", "gomemlimit_bytes", soft)
+	}
 	for _, warning := range cfg.StartupWarnings {
 		log.Warn("configuration warning", "detail", warning)
 	}
@@ -6019,6 +6022,7 @@ func rangecacheConfigFromCfg(cfg *config.Config) rangecache.Config {
 	return rangecache.Config{
 		ReadaheadEnabled:     cfg.Cache.ReadaheadEnabled,
 		ReadaheadMaxSegments: cfg.Cache.ReadaheadMaxSegments,
+		ReadaheadMaxBytes:    cfg.Cache.ReadaheadMaxMB << 20,
 		ReadaheadWorkers:     raWorkers,
 		MinBufferSegments:    cfg.Cache.MinBufferSegments,
 		TailEvict:            cfg.Cache.TailEvict,

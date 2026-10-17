@@ -3268,6 +3268,11 @@ func (s *Server) accountNZBStreamResult(ctx context.Context, r *http.Request, it
 
 func (s *Server) handleStreamProxy(w http.ResponseWriter, r *http.Request) {
 	playbackStarted := s.nowUTC()
+	if r.URL.Query().Get("probe") == "1" {
+		// ffprobe reads a few MB; don't let it open a full playback-sized
+		// readahead window (an arr season-pack import probes every episode).
+		r = r.WithContext(rangecache.WithProbe(r.Context()))
+	}
 	// Reject anything that is not GET or HEAD up front.
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
