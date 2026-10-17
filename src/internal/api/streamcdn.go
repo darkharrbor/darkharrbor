@@ -28,6 +28,7 @@ package api
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -43,6 +44,7 @@ import (
 	"github.com/darkharrbor/darkharrbor/internal/httpstream"
 	"github.com/darkharrbor/darkharrbor/internal/ladder"
 	"github.com/darkharrbor/darkharrbor/internal/outcome"
+	"github.com/darkharrbor/darkharrbor/internal/provider"
 	"github.com/darkharrbor/darkharrbor/internal/rangecache"
 	"github.com/darkharrbor/darkharrbor/internal/store"
 	"github.com/darkharrbor/darkharrbor/internal/torrentmeta"
@@ -272,7 +274,7 @@ func initCDNSource(ctx context.Context, cdnURL string, windowBytes int64, rereso
 
 	status, total, contentType, err := probe(cdnURL)
 	if err != nil {
-		return nil, 0, "", false, err
+		return nil, 0, "", false, provider.MarkRetryable(err)
 	}
 	// An expired or rate-limited probe gets one fresh URL. This initialization
 	// retry is separate from Fetch's per-incident reresolve allowance.
@@ -282,7 +284,11 @@ func initCDNSource(ctx context.Context, cdnURL string, windowBytes int64, rereso
 		}
 		newURL, rerr := reresolve(ctx)
 		if rerr != nil {
-			return nil, 0, "", false, fmt.Errorf("cdn source: probe reresolve failed: %w", rerr)
+			err := fmt.Errorf("cdn source: probe reresolve failed: %w", rerr)
+			if errors.Is(rerr, context.DeadlineExceeded) {
+				err = provider.MarkRetryable(err)
+			}
+			return nil, 0, "", false, err
 		}
 		if newURL == "" {
 			return nil, 0, "", false, fmt.Errorf("cdn source: probe reresolve returned empty URL")
@@ -290,10 +296,14 @@ func initCDNSource(ctx context.Context, cdnURL string, windowBytes int64, rereso
 		src.url = newURL
 		status, total, contentType, err = probe(newURL)
 		if err != nil {
-			return nil, 0, "", false, err
+			return nil, 0, "", false, provider.MarkRetryable(err)
 		}
 		if cdnRefreshStatus(status) {
-			return nil, 0, "", false, fmt.Errorf("cdn source: capability probe status %d after reresolve", status)
+			err := fmt.Errorf("cdn source: capability probe status %d after reresolve", status)
+			if status == http.StatusTooManyRequests {
+				err = provider.MarkRetryable(err)
+			}
+			return nil, 0, "", false, err
 		}
 	}
 	// A range-capable origin answers a single-byte range with 206 and a valid
@@ -302,6 +312,8 @@ func initCDNSource(ctx context.Context, cdnURL string, windowBytes int64, rereso
 		return src, 0, contentType, false, nil
 	}
 	if status != http.StatusPartialContent {
+		// Deliberately not retryable, 5xx included: the grab-time preflight
+		// contract (TS-3.1) treats a non-206 answer as a broken cached file.
 		return nil, 0, "", false, fmt.Errorf("cdn source: unexpected capability probe status %d", status)
 	}
 	src.total = total

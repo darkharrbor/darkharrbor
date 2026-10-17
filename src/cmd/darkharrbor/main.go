@@ -2861,6 +2861,7 @@ func resolveItem(
 		// Absent/malformed target file abstains (preflightOK stays true)
 		// rather than guessing a failure DH has no evidence for.
 		preflightOK := true
+		preflightInconclusive := false
 		preflightFile := largestCachedFile(cachedFiles)
 		if preflightFile != nil && preflightFile.RequestDLURL != "" {
 			pfFileID := preflightFile.FileID
@@ -2877,6 +2878,15 @@ func resolveItem(
 				pfWindowBytes, preflightReresolve, nil, torrentGov, accountgov.PriorityGrab, item.ID)
 			pfCancel()
 			preflightOK = pfErr == nil && pfRangeCapable
+			if pfErr != nil && transientProviderErr(ctx, pfErr) {
+				// A 429, 5xx, transport error or timeout is no evidence the
+				// cached content is broken. Treating it as a failed preflight
+				// sent a good release to repair, which exhausted at once and
+				// blacklisted it for 7 days. Abstain, like a missing target.
+				log.Warn("resolver: grab-time preflight inconclusive (transient), not treated as broken", "item_id", item.ID, "error", pfErr)
+				preflightOK = true
+				preflightInconclusive = true
+			}
 			if !preflightOK {
 				if pfErr != nil {
 					log.Warn("resolver: grab-time preflight capability probe failed", "item_id", item.ID, "error", pfErr)
@@ -2891,7 +2901,7 @@ func resolveItem(
 			// stream writers already record, filling the third source
 			// TS-5.1 declared but deliberately left unwired for this row
 			// (internal/availability.SourcePreflight).
-			if item.Provider != nil {
+			if item.Provider != nil && !preflightInconclusive {
 				if hash := canonicalTorrentHash(item, nil); hash != "" {
 					if provNorm, ok := availability.NormalizeProvider(*item.Provider); ok {
 						if hashNorm, ok := availability.NormalizeHash(hash); ok {

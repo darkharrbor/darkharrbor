@@ -213,3 +213,48 @@ func TestResolveItemGrabPreflightFailureWithholdsCompletionAndRepairs(t *testing
 		t.Fatalf("hash availability = %+v, found=%v, want cached=false source=preflight", ha, found)
 	}
 }
+
+// A rate-limited preflight is inconclusive: the release must not be sent to
+// repair (which can blacklist it), and completion is reported as usual.
+func TestResolveItemGrabPreflightRateLimitedIsInconclusive(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(origin.Close)
+
+	ctx := context.Background()
+	st := newTS31Store(t)
+	root := t.TempDir()
+	writer := output.NewStrmWriter(filepath.Join(root, "strm"), filepath.Join(root, "staging"))
+	writer.SetBlobSink(st, root)
+	writer.SetStreamSecret(strings.Repeat("s", 32))
+
+	item := ts31Item(t, st, "ts31-ratelimited")
+	cfg := ts31Config()
+	prov := &ts31PreflightProvider{url: origin.URL, fileID: "f1", name: "movie.mkv", size: 12345}
+
+	rn := &readyNotifier{ch: make(chan struct{}, 1), arrs: []config.ArrTarget{{}}}
+	var repairCalls []string
+	triggerRepair := func(it *store.Item) { repairCalls = append(repairCalls, it.ID) }
+
+	resolveItem(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), prov, st, writer, nil, 0,
+		"http://darkharrbor:8381", nil, nil, item, strings.Repeat("s", 32), root, "",
+		rn, cfg, nil, nil, nil, nil, triggerRepair, nil)
+
+	got, err := st.GetItemByID(ctx, item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != store.StateReady {
+		t.Fatalf("state = %s, want ready", got.State)
+	}
+	if len(repairCalls) != 0 {
+		t.Fatalf("triggerRepair called on a rate-limited preflight: %v", repairCalls)
+	}
+	if len(rn.ch) != 1 {
+		t.Fatal("completion withheld on an inconclusive preflight")
+	}
+	if _, found, _ := st.GetHashAvailability(ctx, "torbox", *got.InfoHash); found {
+		t.Fatal("inconclusive preflight recorded an availability verdict")
+	}
+}
