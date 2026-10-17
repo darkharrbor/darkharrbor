@@ -1171,7 +1171,7 @@ func main() {
 	// reported, well past FailedRetention's 24h default, simply because
 	// pruning hadn't ticked yet since the last restart).
 	runPruneCycle(ctx, log, st, writer, cfg.Lifecycle.RemovedRetention)
-	runFailedPruneCycle(ctx, log, st, writer, cfg.Lifecycle.FailedRetention, cfg.Arrs)
+	runFailedPruneCycle(ctx, log, st, writer, cfg.Lifecycle.FailedRetention, cfg.Arrs, srv.JanitorCleanup)
 
 	// A-B6: one-time orphan purge for satellite tables (segment_offsets, strm_blobs,
 	// item_file_probes, item_stream_failures, synthetic_release). These tables
@@ -1406,7 +1406,7 @@ func main() {
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
-					runFailedPruneCycle(ctx, log, st, writer, cfg.Lifecycle.FailedRetention, cfg.Arrs)
+					runFailedPruneCycle(ctx, log, st, writer, cfg.Lifecycle.FailedRetention, cfg.Arrs, srv.JanitorCleanup)
 				}
 			}
 		}()
@@ -4023,7 +4023,13 @@ func pruneRemovedItems(ctx context.Context, log *slog.Logger, st *store.Store, w
 // was written (e.g. a multi-file NZB where only some files wrote before a
 // later one failed) — route through the same writer.Remove cleanup for
 // safety rather than assuming there's nothing to clean up.
-func pruneFailedItems(ctx context.Context, log *slog.Logger, st *store.Store, writer output.Writer, retention time.Duration) int64 {
+// release, when non-nil, frees a failed item's provider transfer (TorBox
+// delete) before its row is deleted. Without it the failed row -- the only
+// record of the remote id -- vanished after FailedRetention (5 min), long
+// before the orphan-slot reclaimer's 30 min grace could see it, so every
+// failed uncached torrent kept an Allowed Active Slot until TorBox expired it
+// (measured 2026-10-17: 10/10 slots held by such orphans).
+func pruneFailedItems(ctx context.Context, log *slog.Logger, st *store.Store, writer output.Writer, retention time.Duration, release func(itemID string)) int64 {
 	if retention <= 0 {
 		return 0
 	}
@@ -4042,6 +4048,16 @@ func pruneFailedItems(ctx context.Context, log *slog.Logger, st *store.Store, wr
 		if writer != nil {
 			if err := writer.Remove(ctx, item); err != nil {
 				log.Warn("prune: remove local output for failed item failed (non-fatal)", "item_id", item.ID, "error", err)
+			}
+		}
+		if release != nil && item.RemoteID != nil && *item.RemoteID != "" {
+			shared, serr := st.RemoteIDSharedWithLive(ctx, *item.RemoteID, item.ID)
+			switch {
+			case serr != nil:
+				log.Warn("prune: check shared remote id failed; keeping failed item for next cycle", "item_id", item.ID, "error", serr)
+				continue
+			case !shared:
+				release(item.ID)
 			}
 		}
 		cleanedIDs = append(cleanedIDs, item.ID)
@@ -4080,8 +4096,8 @@ func pruneFailedItems(ctx context.Context, log *slog.Logger, st *store.Store, wr
 // its own retry-prevention (blacklist) purposes, and every extra minute an
 // arr keeps showing it in the queue is a minute the person might mistake
 // for "still broken" instead of "already handled, will try something else."
-func runFailedPruneCycle(ctx context.Context, log *slog.Logger, st *store.Store, writer output.Writer, retention time.Duration, arrs []config.ArrTarget) {
-	n := pruneFailedItems(ctx, log, st, writer, retention)
+func runFailedPruneCycle(ctx context.Context, log *slog.Logger, st *store.Store, writer output.Writer, retention time.Duration, arrs []config.ArrTarget, release func(itemID string)) {
+	n := pruneFailedItems(ctx, log, st, writer, retention, release)
 	if n > 0 {
 		notifyArrsRefresh(ctx, log, arrs)
 	}

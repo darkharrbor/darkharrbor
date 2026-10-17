@@ -505,6 +505,21 @@ func (s *Store) ListOrphanedRemoteBefore(ctx context.Context, cutoff time.Time, 
 	return scanItems(rows)
 }
 
+// RemoteIDSharedWithLive reports whether an item other than excludeID that
+// is not removed or failed is bound to remoteID. TorBox dedups createtorrent
+// by hash, so a failed item's transfer can be the one a live item streams
+// from; callers releasing a failed item's provider resource must skip it then.
+func (s *Store) RemoteIDSharedWithLive(ctx context.Context, remoteID, excludeID string) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(1) FROM items WHERE remote_id = ? AND id <> ? AND state NOT IN ('removed','failed')`,
+		remoteID, excludeID).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("remote id shared with live: %w", err)
+	}
+	return n > 0, nil
+}
+
 // GetItemsByInfoHash returns ALL items with the given info_hash (there may be
 // multiple when re-grabs create new items after a previous removal).
 func (s *Store) GetItemsByInfoHash(ctx context.Context, infoHash string) ([]*Item, error) {
