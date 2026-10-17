@@ -733,6 +733,16 @@ be persisted when it is revealed, and it is not operator-supplied static config.
 Those live in the `provider_credentials` table rather than the sealed-secrets
 file.
 
+If no stored TorBox News Server credential exists (a fresh database, a second
+instance, a restore without this table) and TorBox returns the password
+masked, the only way to obtain a usable one is to reset it, which invalidates
+the current password everywhere else it is used. DarkHarrbor does not do this
+unless `HARRBOR_TORBOX_NEWS_ALLOW_PASSWORD_RESET=true` (environment, default
+`false`); otherwise the TorBox News provider is skipped with an error saying
+so. To run a second instance against the same account, copy the
+`torbox-nntp` row of `provider_credentials` instead (it is sealed with the
+secrets key, so both instances need the same key).
+
 They are nonetheless SEALED AT REST, using the same envelope as sealed secrets
 and the same key. A leaked database or backup is therefore not a credential
 leak. Notes:

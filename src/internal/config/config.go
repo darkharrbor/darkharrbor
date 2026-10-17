@@ -104,6 +104,12 @@ type Config struct {
 		APIToken       string
 		RequestTimeout time.Duration
 		UserAgent      string
+		// NewsAllowPasswordReset permits DarkHarrbor to reset the account's
+		// TorBox News Server password when it has no stored credential and
+		// TorBox only returns a masked one. The reset is account-wide: it
+		// breaks every other consumer of the old password (another
+		// DarkHarrbor instance, a newsreader). Default false.
+		NewsAllowPasswordReset bool
 	}
 
 	Auth struct {
@@ -1269,6 +1275,7 @@ func applyEnv(cfg *Config) {
 		{"HARRBOR_HEALTHAUDIT_ENABLED", &cfg.HealthAudit.Enabled},
 		{"HARRBOR_HEALTHAUDIT_RESEARCH_ENABLED", &cfg.HealthAudit.ReSearchEnabled},
 		{"HARRBOR_GRABHEALTH_ENABLED", &cfg.GrabHealth.Enabled},
+		{"HARRBOR_TORBOX_NEWS_ALLOW_PASSWORD_RESET", &cfg.TorBox.NewsAllowPasswordReset},
 		{"HARRBOR_IDENTITYAUDIT_ENABLED", &cfg.IdentityAudit.Enabled},
 		{"HARRBOR_TORRENT_DECAYAUDIT_ENABLED", &cfg.Governor.TorrentDecayAuditEnabled},
 		{"HARRBOR_METRICS_ENABLED", &cfg.Metrics.Enabled},

@@ -868,6 +868,13 @@ func main() {
 			return nntp.Config{}, fmt.Errorf("torbox news server: fetch credentials: %w", err)
 		}
 		if torbox.IsMaskedPassword(acct.Password) {
+			if !cfg.TorBox.NewsAllowPasswordReset {
+				// A fresh database (reinstall, second instance, restored
+				// backup without this row) used to reset the account-wide
+				// password here unconditionally, silently breaking every
+				// other consumer of it. Opt in explicitly instead.
+				return nntp.Config{}, fmt.Errorf("%w: TorBox News Server password is masked and no stored credential exists; set HARRBOR_TORBOX_NEWS_ALLOW_PASSWORD_RESET=true to let DarkHarrbor reset it (this invalidates the current News Server password everywhere else it is used)", provider.ErrNotConfigured)
+			}
 			log.Warn("torbox news server: no persisted credential and current password is masked; performing a one-time reset to obtain a usable value (this invalidates any previously-issued News Server password for this account)")
 			resetCtx, resetCancel := context.WithTimeout(context.Background(), 10*time.Second)
 			acct, err = torboxClient.ResetUsenetProviderPassword(resetCtx)
