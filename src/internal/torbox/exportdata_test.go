@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/darkharrbor/darkharrbor/internal/provider"
 )
 
 // TS-0.2 (T1): deterministic gates for the best-effort provider metainfo
@@ -123,5 +125,14 @@ func TestExportTorrentFileTransportErrorRedacted(t *testing.T) {
 		if strings.Contains(got, "secret-token") {
 			t.Fatalf("leaked secret token: %s", got)
 		}
+	}
+}
+
+func TestExportTorrentFileJSONNullIsUnavailable(t *testing.T) {
+	c := newTestExportClient(roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return staticResponse(http.StatusOK, []byte("null")), nil
+	}))
+	if _, err := c.ExportTorrentFile(context.Background(), "123"); !errors.Is(err, provider.ErrMetainfoUnavailable) {
+		t.Fatalf("err=%v, want ErrMetainfoUnavailable", err)
 	}
 }

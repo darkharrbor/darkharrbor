@@ -3269,6 +3269,11 @@ func backfillTorrentMeta(ctx context.Context, log *slog.Logger, prov provider.Pr
 	}
 
 	data, err := src.FetchTorrentFile(ctx, *item.RemoteID)
+	if errors.Is(err, provider.ErrMetainfoUnavailable) {
+		log.Debug("resolver: torrentmeta backfill: provider has no metainfo for this item",
+			"item_id", item.ID, "info_hash", hash)
+		return
+	}
 	if err != nil {
 		log.Warn("resolver: torrentmeta backfill: provider metainfo fetch failed (non-fatal)",
 			"item_id", item.ID, "info_hash", hash, "error", err)

@@ -44,6 +44,12 @@ type Adapter struct {
 	slotCached   *provider.SlotStatus
 	slotCachedAt time.Time
 	slotCacheTTL time.Duration
+
+	// cachedAdds records remote ids this process created with
+	// add_only_if_cached. TorBox's exportdata never returns a .torrent for a
+	// cached download, so FetchTorrentFile skips the API call for them.
+	cachedAddsMu sync.Mutex
+	cachedAdds   map[string]struct{}
 }
 
 func NewAdapter(name string, client Client, policy provider.Policy) *Adapter {
@@ -224,7 +230,16 @@ func (a *Adapter) Submit(ctx context.Context, item *store.Item, opts provider.Su
 				return nil, fmt.Errorf("torbox provider: torrent source is an http link and fetch failed (no infohash fallback): %w", ferr)
 			}
 		}
-		return a.client.CreateTorrentTask(ctx, req)
+		resp, err := a.client.CreateTorrentTask(ctx, req)
+		if err == nil && opts.AddOnlyIfCached && resp != nil && resp.RemoteID != "" {
+			a.cachedAddsMu.Lock()
+			if a.cachedAdds == nil {
+				a.cachedAdds = make(map[string]struct{})
+			}
+			a.cachedAdds[resp.RemoteID] = struct{}{}
+			a.cachedAddsMu.Unlock()
+		}
+		return resp, err
 	case store.SourceTypeNZB:
 		return a.client.CreateUsenetTask(ctx, CreateUsenetTaskRequest{
 			Link:            sourceURI,
@@ -262,6 +277,12 @@ func (a *Adapter) RequestDownloadURL(ctx context.Context, item *store.Item, file
 // error) is returned verbatim for the caller to treat as best-effort
 // absence -- this method never itself decides that absence is acceptable.
 func (a *Adapter) FetchTorrentFile(ctx context.Context, remoteID string) ([]byte, error) {
+	a.cachedAddsMu.Lock()
+	_, cached := a.cachedAdds[remoteID]
+	a.cachedAddsMu.Unlock()
+	if cached {
+		return nil, provider.ErrMetainfoUnavailable
+	}
 	return a.client.ExportTorrentFile(ctx, remoteID)
 }
 

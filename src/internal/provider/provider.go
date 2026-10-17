@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
@@ -86,6 +87,10 @@ type SlotSource interface {
 // Optional capability: checked via type assertion. A provider that cannot
 // supply this (Real-Debrid has no equivalent endpoint) simply does not
 // implement it; absence is always non-fatal per T1.
+// ErrMetainfoUnavailable reports that the provider definitively holds no
+// exportable metainfo for an item (as opposed to a transient failure).
+var ErrMetainfoUnavailable = errors.New("provider: metainfo not available for this item")
+
 type MetainfoSource interface {
 	// FetchTorrentFile returns the raw .torrent bytes the provider holds
 	// for remoteID, if any. A provider is free to fail this (e.g. TorBox's

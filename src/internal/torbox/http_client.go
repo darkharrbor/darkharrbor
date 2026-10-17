@@ -568,6 +568,12 @@ func (c *HTTPClient) ExportTorrentFile(ctx context.Context, remoteID string) ([]
 	// with a 200 status and an HTML/JSON body instead of a 4xx. A
 	// well-formed .torrent always starts with 'd' (bencode dict); anything
 	// else is absence, not a parse attempt.
+	// TorBox answers exportdata for a cached download with 200 and a JSON
+	// body of `null` (measured 2026-10-17: every resolve of a cached
+	// torrent). That is a definitive "nothing to export", not an error.
+	if trimmed := strings.TrimSpace(string(data)); trimmed == "null" || strings.HasPrefix(trimmed, "{") {
+		return nil, provider.ErrMetainfoUnavailable
+	}
 	if data[0] != 'd' {
 		return nil, fmt.Errorf("torbox exportdata: response is not a bencoded file (unexpected content)")
 	}
