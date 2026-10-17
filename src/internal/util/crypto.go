@@ -69,7 +69,7 @@ func (r Redacted) LogValue() slog.Value { return slog.StringValue(r.String()) }
 //
 // KDF parameters are pinned below (argon2id time=3, memory=64 MiB,
 // threads=4 — RFC 9106 second recommended parameter choice scaled to a
-// homelab container) and recorded in the header so future tuning leaves
+// small container) and recorded in the header so future tuning leaves
 // existing files decryptable.
 const (
 	sealMagic   = "OCSEAL"

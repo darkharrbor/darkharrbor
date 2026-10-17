@@ -155,7 +155,7 @@ func TestPrewarmHotHeadDisabledIsNoop(t *testing.T) {
 // concurrently queued PriorityPrewarm one once the sole capacity unit
 // frees up. This is CG-05's established closure shape for this gate
 // (matching HR1.4/SF-02's own precedent) since no real dual-stream torrent
-// contention is practically constructible on this homelab.
+// contention is practically constructible on a test host.
 func TestPrewarmHotHeadRespectsGovernorPriority(t *testing.T) {
 	cache := testCache(t)
 	gov := accountgov.New("test-account")

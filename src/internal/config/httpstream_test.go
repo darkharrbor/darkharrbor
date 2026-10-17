@@ -149,7 +149,7 @@ func TestHTTPBackendGenericType(t *testing.T) {
 	cfg, err := backendCfg(t, map[string]string{
 		"HARRBOR_HTTP_BACKENDS":                   "g1",
 		"HARRBOR_HTTPBACKEND_G1_TYPE":             "generic",
-		"HARRBOR_HTTPBACKEND_G1_DESCRIPTORS_FILE": "/srv/docker/homelab/darkharrbor/generic-descriptors.json",
+		"HARRBOR_HTTPBACKEND_G1_DESCRIPTORS_FILE": "/config/generic-descriptors.json",
 	})
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -158,7 +158,7 @@ func TestHTTPBackendGenericType(t *testing.T) {
 		t.Fatalf("backends = %d, want 1", len(cfg.HTTPStream.Backends))
 	}
 	b := cfg.HTTPStream.Backends[0]
-	if b.Type != "generic" || b.URL != "" || b.DescriptorsFile != "/srv/docker/homelab/darkharrbor/generic-descriptors.json" {
+	if b.Type != "generic" || b.URL != "" || b.DescriptorsFile != "/config/generic-descriptors.json" {
 		t.Fatalf("generic backend wrong: %+v", b)
 	}
 }

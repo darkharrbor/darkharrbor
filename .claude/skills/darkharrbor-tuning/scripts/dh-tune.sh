@@ -16,7 +16,7 @@
 
 set -uo pipefail
 
-COMPOSE="${DARKHARRBOR_COMPOSE:-/srv/docker/homelab/darkharrbor/.darkharrbor/compose.yml}"
+COMPOSE="${DARKHARRBOR_COMPOSE:-./docker-compose.yml}"
 SERVICE="${DARKHARRBOR_SERVICE:-darkharrbor}"
 ADMIN_URL="${DARKHARRBOR_ADMIN_URL:-http://127.0.0.1:8381}"
 STREAM_BASE="${DARKHARRBOR_STREAM_BASE:-http://127.0.0.1:8382}"

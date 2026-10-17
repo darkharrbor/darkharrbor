@@ -61,8 +61,8 @@ ffmpeg`) is what runs, yielding a libc-matched network-capable ffprobe.
 DarkHarrbor, after arr discovery, mounts/copies this `strm-mode/` dir into each
 arr container as `$HARRBOR_STRM_STAGE` (default `/opt/harrbor-strm`), drops
 `strm-init.sh` into the container's `/custom-cont-init.d/` for persistence, and
-runs it once via `docker exec` for immediate effect. (DH has host/docker access
-via the homelab connector.) Jellyfin needs no wrapper — it understands `.strm`
+runs it once via `docker exec` for immediate effect (this needs DarkHarrbor to
+have Docker access on the host). Jellyfin needs no wrapper — it understands `.strm`
 and its bundled ffmpeg is already network-capable.
 
 Manual one-shot (any arr container):
@@ -115,16 +115,16 @@ speed); before that fix a probe through DH would have stalled.
 
 ## Update (2026-06-29) — persistent boot install (implemented)
 
-Persistence is wired for the sonarr trio via **compose bind-mounts + an LSIO
+Persistence is wired via **compose bind-mounts + an LSIO
 `/custom-cont-init.d` launcher** (`strm-cont-init.sh`, new in this dir). Per arr
 container:
 
 ```yaml
 volumes:
   # shared, read-only — one 134 MB host copy serves all arr containers
-  - /srv/docker/homelab/darkharrbor/strm-mode:/opt/harrbor-strm:ro
-  # boot hook dir (sonarr already mounts this; radarr needed it added)
-  - /srv/docker/homelab/configs/<arr>/.../custom-cont-init.d:/custom-cont-init.d
+  - ./darkharrbor/strm-mode:/opt/harrbor-strm:ro
+  # LSIO boot hook dir
+  - ./configs/<arr>/custom-cont-init.d:/custom-cont-init.d
 ```
 
 Then drop `strm-cont-init.sh` into that host `custom-cont-init.d` dir as
@@ -136,7 +136,5 @@ Notes:
 - LSIO `init-custom-files` does **not** require root ownership of the hook script
   (only the execute bit), but it runs as PID1's uid — so a service pinned to
   `user: "1000:1000"` runs the hook as 1000 and the root-level install is skipped.
-  **radarr's `user:` override was removed** (PUID/PGID=1000 still drops the app);
-  the sonarr trio already starts as root.
+  Drop a `user:` override on the arr service and rely on PUID/PGID instead.
 - prowlarr ships no `/app/*/bin/ffprobe` → not wired.
-- Compose lives outside this repo at `/srv/docker/homelab/compose/docker-compose.yml`.
