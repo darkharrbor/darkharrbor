@@ -5729,6 +5729,24 @@ func isPAR2VideoName(name string) bool {
 	return false
 }
 
+// isPAR2SevenZipName reports a 7z volume name: x.7z or x.7z.NNN.
+func isPAR2SevenZipName(name string) bool {
+	lower := strings.ToLower(name)
+	if strings.HasSuffix(lower, ".7z") {
+		return true
+	}
+	i := strings.LastIndex(lower, ".7z.")
+	if i < 0 || len(lower)-(i+4) != 3 {
+		return false
+	}
+	for _, c := range lower[i+4:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func isPAR2RARName(name string) bool {
 	lower := strings.ToLower(name)
 	if strings.HasSuffix(lower, ".rar") {
@@ -5755,27 +5773,38 @@ func applyPAR2FileMatches(
 	enriched.Files = append([]nntp.NZBFile(nil), parsedNZB.Files...)
 	exactVideoIndexes := make(map[int]bool)
 
-	requiredRAR := make(map[string]struct{})
-	for _, desc := range info.Files {
-		if isPAR2RARName(desc.Name) {
-			requiredRAR[desc.FileID] = struct{}{}
-		}
-	}
-	matchedRAR := make(map[string]struct{})
-	for _, match := range matches {
-		if isPAR2RARName(match.Desc.Name) {
-			matchedRAR[match.Desc.FileID] = struct{}{}
-		}
-	}
-	fullRARSet := len(requiredRAR) > 0 && len(matchedRAR) == len(requiredRAR)
-	if fullRARSet {
-		for fileID := range requiredRAR {
-			if _, ok := matchedRAR[fileID]; !ok {
-				fullRARSet = false
-				break
+	// fullSet reports whether every file of one archive kind that PAR2
+	// describes was matched to an NZB file; names are applied only then, so
+	// a partial match never yields a gappy volume set.
+	fullSet := func(isKind func(string) bool) bool {
+		required := make(map[string]struct{})
+		for _, desc := range info.Files {
+			if isKind(desc.Name) {
+				required[desc.FileID] = struct{}{}
 			}
 		}
+		matched := make(map[string]struct{})
+		for _, match := range matches {
+			if isKind(match.Desc.Name) {
+				matched[match.Desc.FileID] = struct{}{}
+			}
+		}
+		if len(required) == 0 || len(matched) != len(required) {
+			return false
+		}
+		for fileID := range required {
+			if _, ok := matched[fileID]; !ok {
+				return false
+			}
+		}
+		return true
 	}
+	fullRARSet := fullSet(isPAR2RARName)
+	// 7z sets too: posters such as AndreMor obfuscate the 7z volume's
+	// subject, and the 7z volume finder reads names only, so without the
+	// PAR2 name every such release failed "volume_layout" (measured
+	// 2026-10-17: 54 of 54 old-series grabs in one Sonarr search).
+	fullSevenZipSet := fullSet(isPAR2SevenZipName)
 
 	appliedVideo := 0
 	appliedRAR := 0
@@ -5788,7 +5817,8 @@ func applyPAR2FileMatches(
 			enriched.Files[match.NZBFileIdx].Subject = `"` + match.Desc.Name + `"`
 			exactVideoIndexes[match.NZBFileIdx] = true
 			appliedVideo++
-		case fullRARSet && isPAR2RARName(match.Desc.Name):
+		case fullRARSet && isPAR2RARName(match.Desc.Name),
+			fullSevenZipSet && isPAR2SevenZipName(match.Desc.Name):
 			enriched.Files[match.NZBFileIdx].Subject = `"` + match.Desc.Name + `"`
 			appliedRAR++
 		}
@@ -5856,7 +5886,7 @@ func recoverNZBNamesFromPAR2(
 			log.Info("par2: exact file identity applied",
 				"event", "par2_identity_applied",
 				"video_files", appliedVideos,
-				"rar_parts", appliedRAR,
+				"archive_parts", appliedRAR,
 			)
 			if matchErr != nil {
 				log.Warn("par2: identity scan incomplete after usable exact matches", "provider", name, "error", matchErr)

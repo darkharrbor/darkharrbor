@@ -86,3 +86,34 @@ func TestWriteNZBStrmOrdinaryURLHasNoExactIndex(t *testing.T) {
 		t.Fatalf("ordinary URL unexpectedly changed: %q", url)
 	}
 }
+
+// An obfuscated single-volume 7z (AndreMor-style) gets its PAR2 name, so
+// the 7z volume finder can see it; a partial 7z set is left alone.
+func TestApplyPAR2FileMatchesRecoversSevenZipSet(t *testing.T) {
+	parsed := nntp.NZB{Files: []nntp.NZBFile{
+		{Subject: `[1/1] - "6ih3mw6msirtw3yds354" yEnc (1/1156)`, TotalBytes: 1_000, Segments: []nntp.NZBSegment{{MessageID: "a"}}},
+		{Subject: `"Show.S01E01-AndreMor.vol-01.par2" yEnc (1/1)`, TotalBytes: 10, Segments: []nntp.NZBSegment{{MessageID: "p"}}},
+	}}
+	info := archiveparser.PAR2Info{Files: []archiveparser.PAR2FileDesc{{FileID: "z", Name: "Show.S01E01-AndreMor.7z", Length: 1_000}}}
+	matches := []nntp.PAR2FileMatch{{NZBFileIdx: 0, File: parsed.Files[0], Desc: info.Files[0]}}
+	enriched, _, _, parts := applyPAR2FileMatches(parsed, info, matches)
+	if parts != 1 || enriched.Files[0].Subject != `"Show.S01E01-AndreMor.7z"` {
+		t.Fatalf("parts=%d subject=%q, want 7z name applied", parts, enriched.Files[0].Subject)
+	}
+	if parsed.Files[0].Subject == enriched.Files[0].Subject {
+		t.Fatal("input NZB was mutated")
+	}
+
+	split := archiveparser.PAR2Info{Files: []archiveparser.PAR2FileDesc{
+		{FileID: "a", Name: "x.7z.001", Length: 1_000}, {FileID: "b", Name: "x.7z.002", Length: 1_000},
+	}}
+	_, _, _, parts = applyPAR2FileMatches(parsed, split, []nntp.PAR2FileMatch{{NZBFileIdx: 0, File: parsed.Files[0], Desc: split.Files[0]}})
+	if parts != 0 {
+		t.Fatalf("partial 7z set applied %d names, want 0", parts)
+	}
+	for name, want := range map[string]bool{"a.7z": true, "a.7Z.001": true, "a.7z.01": false, "a.7zip": false, "a.mkv": false} {
+		if isPAR2SevenZipName(name) != want {
+			t.Errorf("isPAR2SevenZipName(%q) != %v", name, want)
+		}
+	}
+}
