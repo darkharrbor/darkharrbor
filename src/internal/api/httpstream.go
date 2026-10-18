@@ -183,6 +183,10 @@ func (s *Server) ResolveHTTPItem(ctx context.Context, item *store.Item) {
 func (s *Server) httpFailItem(ctx context.Context, item *store.Item, err error) {
 	msg := httpstream.Sanitize(err)
 	item.ErrorMessage = &msg
+	// The row is pruned after FailedRetention (5 min), so without this line
+	// a failed HTTP grab left no trace of why (measured 2026-10-17: every
+	// HTTP-lane grab for an old series failed with nothing logged).
+	s.log.Warn("http resolve: item failed", "item_id", item.ID, "display_name", item.DisplayName, "class", string(httpstream.ClassOf(err)), "error", msg)
 	if uerr := s.store.UpdateItemState(ctx, item, store.StateFailed, msg); uerr != nil {
 		s.log.Error("http resolve: persist failed state", "item_id", item.ID, "error", uerr)
 	}
