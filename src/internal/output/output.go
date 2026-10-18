@@ -191,6 +191,16 @@ func VerifyStreamToken(secret, itemID, fileID, token string) bool {
 
 // CleanStaging removes any leftover staging directories from a previous
 // run (e.g. crash recovery). Called once at startup before any writes.
+// StreamURL returns the signed /stream/{item}/{file} URL the stream route
+// serves, the same form Write produces for torrent files.
+func (w *StrmWriter) StreamURL(baseProxyURL, itemID, fileID string) string {
+	base := strings.TrimRight(baseProxyURL, "/") + "/stream/" + itemID + "/" + fileID
+	if w.streamSecret == "" {
+		return base
+	}
+	return base + "?tok=" + GenerateStreamToken(w.streamSecret, itemID, fileID)
+}
+
 func (w *StrmWriter) CleanStaging() error {
 	entries, err := os.ReadDir(w.stagingRoot)
 	if err != nil {

@@ -129,7 +129,24 @@ func (p *NNTPProvider) BuildSevenZipManifest(ctx context.Context, nzb NZB) (Seve
 		candidates = append(candidates, candidate{file: file, index: i, stem: stem, part: part})
 	}
 	if len(candidates) == 0 {
-		return SevenZipManifest{}, 0, ErrNoSevenZipVolumes
+		// Obfuscated single-volume posts (e.g. AndreMor DVD rips: one data
+		// file named "6ih3mw6msirtw3yds354" plus PAR2, whose own file
+		// description carries the same scrambled name) have no ".7z" name
+		// anywhere. The caller only gets here after magic bytes classified
+		// the content as 7z, so a lone data file is the volume; the 7z
+		// header parse below still verifies it. Several obfuscated files
+		// stay unsupported: their volume order cannot be known by name.
+		var lone []candidate
+		for i, file := range nzb.Files {
+			if isSevenZipSidecarSubject(file.Subject) || len(file.Segments) == 0 || file.TotalBytes <= 0 {
+				continue
+			}
+			lone = append(lone, candidate{file: file, index: i, stem: "", part: 0})
+		}
+		if len(lone) != 1 {
+			return SevenZipManifest{}, 0, ErrNoSevenZipVolumes
+		}
+		candidates = lone
 	}
 	groups := make(map[string][]candidate)
 	for _, candidate := range candidates {
@@ -371,6 +388,18 @@ func parseSevenZipRange(header string, size int64) (start, end int64, partial, o
 		}
 	}
 	return start, end, true, true
+}
+
+// isSevenZipSidecarSubject reports NZB entries that are never archive data:
+// PAR2 repair files and the usual small companions.
+func isSevenZipSidecarSubject(subject string) bool {
+	lower := strings.ToLower(subject)
+	for _, ext := range []string{".par2", ".nfo", ".sfv", ".nzb", ".jpg", ".jpeg", ".png", ".txt", ".srr", ".md5"} {
+		if strings.Contains(lower, ext+`"`) || strings.Contains(lower, ext+" ") || strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseSevenZipVolumeSubject(subject string) (stem string, part int, ok bool) {

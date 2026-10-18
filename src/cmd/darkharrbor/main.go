@@ -5301,6 +5301,18 @@ func resolveSevenZipItem(
 			scheduleResolveRetry(ctx, log, st, item, 60*time.Second, "write 7z stream pointer failed")
 			return
 		}
+		// The WebDAV 7z route and the stream route both address an entry
+		// by the numeric index at the end of the .strm URL; the name-based
+		// /dav URL writeNZBStrm produced made every 7z item 500 with
+		// "invalid materialized stream index" (measured 2026-10-17, the
+		// first 7z release that ever reached ready). Keep the file name
+		// and folder, point the content at the signed stream URL.
+		strmURL = writer.StreamURL(baseProxyURL, item.ID, strconv.Itoa(entry.EntryIdx))
+		if writeErr := atomicWriteFile(path, []byte(strmURL), 0o644); writeErr != nil {
+			log.Warn("resolve7z: write stream pointer failed", "entry_idx", entry.EntryIdx, "error", writeErr)
+			scheduleResolveRetry(ctx, log, st, item, 60*time.Second, "write 7z strm failed")
+			return
+		}
 		if stubAuthority == "db" {
 			if rel, relErr := filepath.Rel(dataRoot, path); relErr == nil && !strings.HasPrefix(rel, "..") {
 				if persistErr := st.UpsertStrmBlobAt(ctx, item.ID, entry.EntryIdx, rel, strmURL); persistErr != nil {
