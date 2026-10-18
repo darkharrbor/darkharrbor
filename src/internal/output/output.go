@@ -1153,6 +1153,40 @@ func fileSeasonEp(name string) (season, ep int, ok bool) {
 	return 0, 0, false
 }
 
+// ReleaseScopeKeep applies scopeVideoToReleaseTitle's rule to a list of file
+// names without reordering them: keep[i] is false for a file whose name puts
+// it outside the single season/episode range the release title names. The
+// NZB writer addresses files by position, so it skips rather than removes.
+// All true when the title has no single-season scope, fewer than two names
+// are given, nothing would be dropped, or nothing would remain.
+func ReleaseScopeKeep(title string, names []string) []bool {
+	keep := make([]bool, len(names))
+	for i := range keep {
+		keep[i] = true
+	}
+	if len(names) < 2 {
+		return keep
+	}
+	sc, ok := releaseScopeFromTitle(title)
+	if !ok {
+		return keep
+	}
+	dropped := 0
+	for i, name := range names {
+		s, e, parsed := fileSeasonEp(name)
+		if parsed && (s != sc.season || (sc.epFirst > 0 && (e < sc.epFirst || e > sc.epLast))) {
+			keep[i] = false
+			dropped++
+		}
+	}
+	if dropped == 0 || dropped == len(names) {
+		for i := range keep {
+			keep[i] = true
+		}
+	}
+	return keep
+}
+
 // scopeVideoToReleaseTitle drops video files whose names place them outside
 // the single season/episode range the release title names. Files without a
 // parseable season/episode are kept; if nothing would remain, or the title

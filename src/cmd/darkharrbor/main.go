@@ -5040,9 +5040,25 @@ func resolveNZBItem(
 	// Ordinary subjects retain the historical filtered-video index. A PAR2-
 	// recovered direct file carries its exact ParseNZB index in the WebDAV URL
 	// so playback cannot silently select a PAR2/NFO/other payload.
+	// Torrent parity (scopeVideoToReleaseTitle): an oversized pack posted
+	// under a single-season/episode title writes only the titled range. A
+	// keep-mask, not a filter, because non-exact entries are addressed by
+	// their position i in videoFiles.
+	subjects := make([]string, len(videoFiles))
+	for i, selection := range videoFiles {
+		subjects[i] = nzbSubjectFileName(selection.File.Subject)
+	}
+	inScope := output.ReleaseScopeKeep(item.DisplayName, subjects)
+	if skipped := countFalse(inScope); skipped > 0 {
+		log.Info("resolveNZB: scoped pack to release title", "files", len(videoFiles), "skipped", skipped)
+	}
+
 	var firstStrmPath string
 	var totalSize int64
 	for i, selection := range videoFiles {
+		if !inScope[i] {
+			continue
+		}
 		var strmPath, strmURL string
 		var err error
 		if exactVideoIndexes[selection.NZBFileIdx] {
@@ -5148,6 +5164,9 @@ func resolveNZBItem(
 	if np := firstNNTPProvider(nntpProviders, usenetOrder, probeProviderUsed); np != nil {
 		targets := make([]nntp.SubtitleTarget, 0, len(videoFiles))
 		for i, selection := range videoFiles {
+			if !inScope[i] {
+				continue
+			}
 			targets = append(targets, nntp.SubtitleTarget{
 				Filename: selection.File.Subject,
 				FileID:   fmt.Sprintf("nzb-%d", i),
@@ -5165,7 +5184,7 @@ func resolveNZBItem(
 	}
 	log.Info("resolveNZB: strms written successfully",
 		"strm_path", firstStrmPath,
-		"file_count", len(videoFiles),
+		"file_count", len(videoFiles)-countFalse(inScope),
 	)
 	if err := st.UpdateItemState(ctx, item, store.StateReady, ""); err != nil {
 		// BUGFIX 2026-07-01 (torbox API-hit audit): same missing-backoff
@@ -5189,11 +5208,14 @@ func resolveNZBItem(
 	// B-N9: debounced arr refresh.
 	rn.Notify()
 	if np := nntpProviders[probeProviderUsed]; np != nil {
-		largestIndex := 0
-		for i := 1; i < len(videoFiles); i++ {
-			if videoFiles[i].File.TotalBytes > videoFiles[largestIndex].File.TotalBytes {
+		largestIndex := -1
+		for i := range videoFiles {
+			if inScope[i] && (largestIndex < 0 || videoFiles[i].File.TotalBytes > videoFiles[largestIndex].File.TotalBytes) {
 				largestIndex = i
 			}
+		}
+		if largestIndex < 0 {
+			largestIndex = 0
 		}
 		prewarmIndex := largestIndex
 		if exactVideoIndexes[videoFiles[largestIndex].NZBFileIdx] {
@@ -5623,6 +5645,28 @@ func hintNZBArchiveType(files []nntp.NZBFile) archiveparser.Format {
 }
 
 var nzbVideoExts = []string{".mkv", ".mp4", ".avi", ".ts", ".m2ts", ".webm"}
+
+// countFalse counts the false entries of a keep-mask.
+func countFalse(keep []bool) int {
+	n := 0
+	for _, k := range keep {
+		if !k {
+			n++
+		}
+	}
+	return n
+}
+
+// nzbSubjectFileName extracts the quoted file name from an NZB subject
+// ("[01/20] - \"Show.S01E02.mkv\" yEnc"), or returns the subject unchanged.
+func nzbSubjectFileName(subject string) string {
+	if i := strings.IndexByte(subject, '"'); i >= 0 {
+		if j := strings.IndexByte(subject[i+1:], '"'); j >= 0 {
+			return subject[i+1 : i+1+j]
+		}
+	}
+	return subject
+}
 
 type nzbVideoSelection struct {
 	NZBFileIdx int
