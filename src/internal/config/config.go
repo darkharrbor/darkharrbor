@@ -1602,31 +1602,51 @@ func (c *Config) Validate() error {
 	case c.Governor.TorrentKeepWarmDays < 0:
 		return errors.New("governor.torrent_keepwarm_days must be >= 0")
 	}
-	if strings.TrimSpace(c.Server.StreamSecret) == "" {
-		return errors.New("HARRBOR_STREAM_SECRET is required (min 32 chars); set in .env")
-	}
-	if len(strings.TrimSpace(c.Server.StreamSecret)) < 32 {
-		return errors.New("HARRBOR_STREAM_SECRET must be at least 32 characters")
-	}
-	if err := c.Stremio.Validate(c.Server.StreamSecret); err != nil {
-		return err
+	// The required credentials are reported together: a fresh install with
+	// none set used to fail on one per restart (stream secret, then qBit
+	// password, then SAB key -- measured 2026-10-17 on an empty instance).
+	var missing []error
+	secretOK := false
+	switch {
+	case strings.TrimSpace(c.Server.StreamSecret) == "":
+		missing = append(missing, errors.New("HARRBOR_STREAM_SECRET is required (min 32 chars); set in .env"))
+	case len(strings.TrimSpace(c.Server.StreamSecret)) < 32:
+		missing = append(missing, errors.New("HARRBOR_STREAM_SECRET must be at least 32 characters"))
+	default:
+		secretOK = true
 	}
 	if strings.TrimSpace(c.Auth.QBitPassword) == "darkharrbor" {
-		return errors.New("auth.qbit_password must not be the default value 'darkharrbor'; set HARRBOR_QBIT_PASSWORD in .env")
+		missing = append(missing, errors.New("auth.qbit_password must not be the default value 'darkharrbor'; set HARRBOR_QBIT_PASSWORD in .env"))
 	}
 	if strings.TrimSpace(c.Auth.SABAPIKey) == "darkharrbor-sab-key" {
-		return errors.New("auth.sab_api_key must not be the default value 'darkharrbor-sab-key'; set HARRBOR_SAB_API_KEY in .env")
+		missing = append(missing, errors.New("auth.sab_api_key must not be the default value 'darkharrbor-sab-key'; set HARRBOR_SAB_API_KEY in .env"))
 	}
 	if c.LaneEnabled(LaneTorBoxTorrent) || c.LaneEnabled(LaneTorBoxNZB) {
 		if err := validateSecret("torbox.api_token", c.TorBox.APIToken); err != nil {
-			return err
+			missing = append(missing, fmt.Errorf("%w (HARRBOR_TORBOX_API_TOKEN)", err))
 		}
 	}
 	if err := validateSecret("auth.qbit_password", c.Auth.QBitPassword); err != nil {
-		return err
+		missing = append(missing, fmt.Errorf("%w (HARRBOR_QBIT_PASSWORD)", err))
 	}
 	if err := validateSecret("auth.sab_api_key", c.Auth.SABAPIKey); err != nil {
-		return err
+		missing = append(missing, fmt.Errorf("%w (HARRBOR_SAB_API_KEY)", err))
+	}
+	if len(missing) > 0 {
+		if len(missing) == 1 {
+			return missing[0]
+		}
+		msgs := make([]string, len(missing))
+		for i, m := range missing {
+			msgs[i] = m.Error()
+		}
+		// One line: this is logged as a single attribute at startup.
+		return fmt.Errorf("%d required settings missing or invalid: %s", len(missing), strings.Join(msgs, "; "))
+	}
+	if secretOK {
+		if err := c.Stremio.Validate(c.Server.StreamSecret); err != nil {
+			return err
+		}
 	}
 	if err := validateCacheModes(c); err != nil {
 		return err
