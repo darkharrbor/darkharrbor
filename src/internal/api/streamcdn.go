@@ -1047,7 +1047,11 @@ func (s *Server) streamViaCache(w http.ResponseWriter, r *http.Request, item *st
 	}
 	if err := s.streamCache.Stream(ctx, src, mode, total, w, r.Header.Get("Range"), minBuf); err != nil { // HARRBOR_STREAM_MIN_BUFFER_SEGMENTS (default 2)
 		// Bytes may already be in flight; status is committed. Log only.
-		s.log.Warn("stream: cdn cache stream error", "error", httpstream.Sanitize(err))
+		if clientGone(ctx, err) {
+			s.log.Debug("stream: cdn cache stream ended by client", "error", httpstream.Sanitize(err))
+		} else {
+			s.log.Warn("stream: cdn cache stream error", "error", httpstream.Sanitize(err))
+		}
 		// TS-4.1: a genuine (non-client-cancelled) terminal fetch failure on
 		// a real-playback stream (altCandidates is non-nil only at this real
 		// playback call site, never for prewarm/RAR/ZIP — the same signal

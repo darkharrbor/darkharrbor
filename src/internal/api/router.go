@@ -3953,7 +3953,11 @@ func (s *Server) handleStreamProxy(w http.ResponseWriter, r *http.Request) {
 	n, copyErr := s.copyPlaybackBody(copyCtx, w, proxyResp.Body, buf, offset, "cdn_passthrough", nil)
 	if copyErr != nil {
 		// Headers already sent — cannot change status code. Log and move on.
-		s.log.Warn("stream: proxy copy failed", "item_id", itemID, "error", httpstream.Sanitize(copyErr))
+		if clientGone(r.Context(), copyErr) {
+			s.log.Debug("stream: proxy copy ended by client", "item_id", itemID, "error", httpstream.Sanitize(copyErr))
+		} else {
+			s.log.Warn("stream: proxy copy failed", "item_id", itemID, "error", httpstream.Sanitize(copyErr))
+		}
 	}
 	// B-O4: meter egress bytes.
 	if n > 0 && s.egressMeter != nil {

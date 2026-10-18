@@ -2084,7 +2084,7 @@ func submitItem(
 ) {
 	// NZB items route to NNTP, not debrid lanes.
 	if item.SourceType == store.SourceTypeNZB {
-		log.Info("submit: NZB item routed to NNTP lane (recovery path)", "item_id", item.ID)
+		log.Debug("submit: NZB item routed to NNTP lane (recovery path)", "item_id", item.ID)
 		return
 	}
 
@@ -5087,7 +5087,7 @@ func resolveNZBItem(
 			scheduleResolveRetry(ctx, log, st, item, 60*time.Second, "write NZB provider NFO failed")
 			return
 		}
-		if i == 0 {
+		if firstStrmPath == "" {
 			firstStrmPath = strmPath
 		}
 		totalSize += selection.File.TotalBytes

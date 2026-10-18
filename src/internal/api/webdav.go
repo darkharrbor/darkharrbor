@@ -426,7 +426,9 @@ func (s *Server) webdavGet(w http.ResponseWriter, r *http.Request) {
 		} else {
 			streamErr = usenetProv.StreamRARManifest(r.Context(), *item.RarManifest, item.TotalSize, streamWriter, rangeHeader, item.ID, contentKey)
 		}
-		if streamErr != nil {
+		if streamErr != nil && clientGone(r.Context(), streamErr) {
+			s.log.Debug("webdav: rar stream ended by client", "item_id", item.ID, "error", streamErr)
+		} else if streamErr != nil {
 			s.log.Warn("webdav: rar stream error", "item_id", item.ID, "error", streamErr)
 		} else {
 			// NS-5.4: idle-only one-episode look-ahead prewarm, only after a
@@ -445,13 +447,21 @@ func (s *Server) webdavGet(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := sevenZipProv.StreamSevenZipEntry(r.Context(), *item.Metadata.SevenZipManifest, fileIndex, streamWriter, r.Header.Get("Range"), item.ID, contentKey); err != nil {
-			s.log.Warn("webdav: 7z stream error", "item_id", item.ID, "error", err)
+			if clientGone(r.Context(), err) {
+				s.log.Debug("webdav: 7z stream ended by client", "item_id", item.ID, "error", err)
+			} else {
+				s.log.Warn("webdav: 7z stream error", "item_id", item.ID, "error", err)
+			}
 		}
 		return
 	}
 
 	if err := usenetProv.Stream(r.Context(), item.ID, []byte(*item.SourceURI), fileIndex, streamWriter, r.Header.Get("Range")); err != nil {
-		s.log.Warn("webdav: stream error", "item_id", item.ID, "error", err)
+		if clientGone(r.Context(), err) {
+			s.log.Debug("webdav: stream ended by client", "item_id", item.ID, "error", err)
+		} else {
+			s.log.Warn("webdav: stream error", "item_id", item.ID, "error", err)
+		}
 	}
 }
 
